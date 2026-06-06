@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "context-optimizer"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server that filters and compresses context before it reaches the LLM"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -28,6 +28,8 @@ dependencies = [
     "numpy>=1.24",
     "llmlingua>=0.0.5",
     "python-dotenv>=1.0",
+    "diskcache>=5.0",
+    "watchdog>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +40,10 @@ dev = [
 ]
 gpu = [
     "torch>=2.0",
+]
+ui = [
+    "gradio>=4.0",
+    "pyvis>=0.3",
 ]
 
 [project.scripts]

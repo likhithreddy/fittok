@@ -84,4 +84,4 @@ class TestCompressContext:
         mock_get.return_value = mock_compressor
 
         compress_context("word " * 200, "q", target_tokens=50, model="custom-model")
-        mock_get.assert_called_with("custom-model")
+        mock_get.assert_called_with("custom-model", None)

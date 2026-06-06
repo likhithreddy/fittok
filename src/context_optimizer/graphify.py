@@ -405,6 +405,159 @@ def parse_codebase(root_path: str) -> KnowledgeGraph:
     return graph
 
 
+# ── Chunked streaming parser ─────────────────────────────────────────────────
+
+_SKIP_DIRS = {
+    "node_modules", ".git", "__pycache__", ".venv", "venv",
+    "dist", "build", ".tox", ".mypy_cache", ".pytest_cache",
+    ".next", ".nuxt", "target", "vendor", ".gradle",
+}
+
+
+def _get_code_files(root_path: str) -> list[Path]:
+    """Collect all parseable code files under root."""
+    root = Path(root_path).resolve()
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for f in filenames:
+            p = Path(dirpath) / f
+            if p.suffix in _EXT_TO_LANG:
+                files.append(p)
+    return files
+
+
+def _resolve_edges(all_nodes: list[GraphNode], all_edges: list[GraphEdge]) -> list[GraphEdge]:
+    """Resolve placeholder edge targets to node IDs."""
+    name_to_ids: dict[str, list[str]] = {}
+    for n in all_nodes:
+        name_to_ids.setdefault(n.name, []).append(n.id)
+
+    file_nodes = [n for n in all_nodes if n.type == NodeType.FILE]
+
+    resolved: list[GraphEdge] = []
+    for edge in all_edges:
+        if edge.type in (EdgeType.CALLS, EdgeType.REFERENCES):
+            targets = name_to_ids.get(edge.target, [])
+            for tid in targets[:3]:
+                resolved.append(GraphEdge(source=edge.source, target=tid, type=edge.type))
+        elif edge.type == EdgeType.IMPORTS:
+            targets = _resolve_import_target(edge.target, file_nodes)
+            if not targets:
+                targets = name_to_ids.get(edge.target, [])
+            for tid in targets[:1]:
+                resolved.append(GraphEdge(source=edge.source, target=tid, type=edge.type))
+        else:
+            resolved.append(edge)
+    return resolved
+
+
+async def parse_codebase_stream(root_path: str, batch_size: int = 50):
+    """Async generator that parses in batches, yielding progress.
+
+    Yields dicts with progress info, final yield contains the graph.
+    """
+    root = Path(root_path).resolve()
+    if not root.is_dir():
+        raise ValueError(f"Not a directory: {root}")
+
+    files = _get_code_files(root_path)
+    total = len(files)
+    all_nodes: list[GraphNode] = []
+    all_edges: list[GraphEdge] = []
+
+    for i in range(0, total, batch_size):
+        batch = files[i:i + batch_size]
+        for fp in batch:
+            try:
+                n, e = parse_file(fp, root)
+                all_nodes.extend(n)
+                all_edges.extend(e)
+            except Exception:
+                logger.warning("Failed to parse %s", fp, exc_info=True)
+
+        yield {
+            "stage": "parsing",
+            "progress": min((i + batch_size) / total, 1.0),
+            "files_parsed": min(i + batch_size, total),
+            "total_files": total,
+            "nodes_so_far": len(all_nodes),
+        }
+
+    resolved = _resolve_edges(all_nodes, all_edges)
+    graph = KnowledgeGraph(
+        nodes=all_nodes,
+        edges=resolved,
+        metadata=GraphMetadata(
+            root=str(root),
+            total_nodes=len(all_nodes),
+            total_edges=len(resolved),
+        ),
+    )
+
+    yield {
+        "stage": "parsing",
+        "status": "done",
+        "total_nodes": len(all_nodes),
+        "total_edges": len(resolved),
+        "graph": graph,
+    }
+
+
+# ── Incremental graph updates ────────────────────────────────────────────────
+
+def update_graph(graph: KnowledgeGraph, root_path: str, changed_files: list[str]) -> KnowledgeGraph:
+    """Re-parse only changed files and merge into existing graph."""
+    root = Path(root_path).resolve()
+
+    # Remove old nodes/edges for changed files
+    changed_rel = set()
+    for cf in changed_files:
+        try:
+            changed_rel.add(str(Path(cf).relative_to(root)))
+        except ValueError:
+            changed_rel.add(cf)
+
+    # Filter out old data for changed files
+    kept_nodes = [n for n in graph.nodes if n.file not in changed_rel]
+    kept_edges = [
+        e for e in graph.edges
+        if not any(nid.startswith(f"file:{f}") or f":{f}:" in nid
+                   for nid in (e.source, e.target) for f in changed_rel)
+    ]
+
+    # Re-parse changed files
+    new_nodes: list[GraphNode] = []
+    new_edges: list[GraphEdge] = []
+    for cf in changed_files:
+        fp = Path(cf)
+        if not fp.is_file() or fp.suffix not in _EXT_TO_LANG:
+            continue
+        try:
+            n, e = parse_file(fp, root)
+            new_nodes.extend(n)
+            new_edges.extend(e)
+        except Exception:
+            logger.warning("Failed to re-parse %s", fp, exc_info=True)
+
+    # Merge
+    merged_nodes = kept_nodes + new_nodes
+    merged_edges = kept_edges + new_edges
+
+    # Re-resolve edges
+    resolved = _resolve_edges(merged_nodes, merged_edges)
+
+    return KnowledgeGraph(
+        nodes=merged_nodes,
+        edges=resolved,
+        metadata=GraphMetadata(
+            root=str(root),
+            total_nodes=len(merged_nodes),
+            total_edges=len(resolved),
+        ),
+    )
+
+
 def save_graph(graph: KnowledgeGraph, output_path: str | None = None) -> str:
     """Save a KnowledgeGraph to JSON. Returns the output path."""
     if output_path is None:

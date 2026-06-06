@@ -1,9 +1,11 @@
 """LLMLingua wrapper — compress context using a local model.
 
-The model can be configured via:
-  - The ``CONTEXT_OPTIMIZER_MODEL`` environment variable
-  - The ``model`` parameter on ``compress_context()``
-  - Default: ``microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank``
+Supports CPU and GPU (CUDA) modes, configurable via:
+  - Environment variables:
+      CONTEXT_OPTIMIZER_MODEL — CPU model name
+      CONTEXT_OPTIMIZER_MODEL_GPU — GPU model name
+      CONTEXT_OPTIMIZER_DEVICE — "auto" | "cuda" | "cpu"
+  - Function parameters on compress_context()
 """
 
 from __future__ import annotations
@@ -17,14 +19,42 @@ from .tokens import count_tokens as _count_tokens
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank"
+DEFAULT_GPU_MODEL = "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank"
 
 # Cache keyed by model name
 _compressors: dict[str, object] = {}
 
 
-def _get_compressor(model_name: str | None = None) -> object:
+def _has_cuda() -> bool:
+    """Check if CUDA is available."""
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
+
+def _resolve_device(device: str | None = None) -> str:
+    """Resolve the target device."""
+    dev = device or os.environ.get("CONTEXT_OPTIMIZER_DEVICE", "auto")
+    if dev == "auto":
+        return "cuda" if _has_cuda() else "cpu"
+    return dev
+
+
+def _resolve_model(device: str, model_name: str | None = None) -> str:
+    """Pick the right model for the device."""
+    if model_name:
+        return model_name
+    if device == "cuda":
+        return os.environ.get("CONTEXT_OPTIMIZER_MODEL_GPU", DEFAULT_GPU_MODEL)
+    return os.environ.get("CONTEXT_OPTIMIZER_MODEL", DEFAULT_MODEL)
+
+
+def _get_compressor(model_name: str | None = None, device: str | None = None) -> object:
     """Lazily initialize and cache the LLMLingua PromptCompressor."""
-    name = model_name or os.environ.get("CONTEXT_OPTIMIZER_MODEL", DEFAULT_MODEL)
+    resolved_device = _resolve_device(device)
+    name = _resolve_model(resolved_device, model_name)
 
     if name in _compressors:
         return _compressors[name]
@@ -36,7 +66,7 @@ def _get_compressor(model_name: str | None = None) -> object:
             "llmlingua is not installed. Install it with: pip install llmlingua"
         )
 
-    logger.info("Initializing LLMLingua PromptCompressor(model=%s) ...", name)
+    logger.info("Initializing LLMLingua PromptCompressor(model=%s, device=%s) ...", name, resolved_device)
     compressor = PromptCompressor(model_name=name)
     _compressors[name] = compressor
     return compressor
@@ -48,6 +78,7 @@ def compress_context(
     target_tokens: int = 500,
     rate: float | None = None,
     model: Optional[str] = None,
+    device: Optional[str] = None,
 ) -> dict:
     """Compress context text using LLMLingua.
 
@@ -56,7 +87,8 @@ def compress_context(
         question: A guiding question to steer compression.
         target_tokens: Target output token count.
         rate: Optional compression ratio override (0.0–1.0).
-        model: Optional model name override (or set CONTEXT_OPTIMIZER_MODEL env var).
+        model: Optional model name override.
+        device: Optional device override ("auto" | "cuda" | "cpu").
 
     Returns:
         Dict with keys: compressed, original_tokens, compressed_tokens, compression_ratio
@@ -79,7 +111,7 @@ def compress_context(
             "compression_ratio": 1.0,
         }
 
-    compressor = _get_compressor(model)
+    compressor = _get_compressor(model, device)
 
     effective_rate: float = rate if rate is not None else target_tokens / original_tokens
     effective_rate = max(0.1, min(effective_rate, 1.0))

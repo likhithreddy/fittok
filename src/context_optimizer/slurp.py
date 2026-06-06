@@ -155,26 +155,29 @@ def _select_nodes(
     scores: dict[str, float],
     token_budget: int,
 ) -> list:
-    """Greedy selection of nodes by score, boosting neighbors of selected nodes.
+    """3-phase greedy selection: pick → accumulate boosts → fill.
 
-    Neighbors of high-scoring nodes receive an adjacency boost to their score,
-    so contextually related code is preferred over unrelated but slightly
-    higher-scoring distant nodes.
+    Phase 1: Greedy selection by score, accumulating adjacency boosts
+             without re-sorting. O(n log n) for the initial sort.
+    Phase 2: Apply all accumulated boosts to remaining nodes, sort once.
+    Phase 3: Fill remaining budget from boosted rankings.
+
+    Overall: O(n log n + n×d) where d = avg neighbor degree.
     """
     node_map = {n.id: n for n in nodes}
     adj = _build_adjacency(nodes, edges)
 
-    # Working copy of scores — neighbors get boosted
-    effective_scores = dict(scores)
-
-    # Sort by score descending
-    ranked = sorted(effective_scores.items(), key=lambda x: x[1], reverse=True)
+    # Phase 1: Initial greedy pass — select high-scoring nodes, collect boosts
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
     selected_ids: set[str] = set()
     selected_nodes: list = []
     tokens_used = 0
+    boost_accumulator: dict[str, float] = defaultdict(float)
 
-    for nid, _score in ranked:
+    for nid, score in ranked:
+        if tokens_used >= token_budget:
+            break
         if nid in selected_ids:
             continue
         node = node_map.get(nid)
@@ -189,15 +192,36 @@ def _select_nodes(
         selected_nodes.append(node)
         tokens_used += node_tokens
 
-        # Boost neighbors' effective scores so they're prioritized in future iterations
+        # Accumulate boosts for neighbors (don't apply yet)
         for neighbor_id in adj.get(nid, set()):
-            if neighbor_id not in selected_ids and neighbor_id in effective_scores:
-                effective_scores[neighbor_id] = (
-                    effective_scores[neighbor_id] * (1 + NEIGHBOR_DECAY)
-                )
+            if neighbor_id not in selected_ids:
+                boost_accumulator[neighbor_id] += NEIGHBOR_DECAY * score
 
-        # Re-rank after boosting
-        ranked = sorted(effective_scores.items(), key=lambda x: x[1], reverse=True)
+    # Phase 2: Apply accumulated boosts, re-sort once
+    boosted_scores = dict(scores)
+    for nid, boost in boost_accumulator.items():
+        if nid not in selected_ids:
+            boosted_scores[nid] = boosted_scores.get(nid, 0) + boost
+
+    ranked_boosted = sorted(boosted_scores.items(), key=lambda x: x[1], reverse=True)
+
+    # Phase 3: Fill remaining budget with boosted nodes
+    for nid, _score in ranked_boosted:
+        if tokens_used >= token_budget:
+            break
+        if nid in selected_ids:
+            continue
+        node = node_map.get(nid)
+        if node is None:
+            continue
+
+        node_tokens = count_tokens(node.content) if node.content else count_tokens(node.name) + 10
+        if tokens_used + node_tokens > token_budget:
+            continue
+
+        selected_ids.add(nid)
+        selected_nodes.append(node)
+        tokens_used += node_tokens
 
     return selected_nodes
 
