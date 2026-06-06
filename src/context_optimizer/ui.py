@@ -156,7 +156,7 @@ def create_ui(graph=None):
 
 
 def launch_ui(port: int = 8765, open_browser: bool = True, graph=None) -> dict:
-    """Launch the web visualization UI.
+    """Launch the web visualization UI in a background thread.
 
     Args:
         port: Port to serve on (default 8765).
@@ -166,9 +166,19 @@ def launch_ui(port: int = 8765, open_browser: bool = True, graph=None) -> dict:
     Returns:
         Dict with launch info.
     """
+    import threading
+
     try:
         app = create_ui(graph)
-        app.launch(server_port=port, inbrowser=open_browser, show_error=True)
+        # Run Gradio in a daemon thread so it doesn't block the MCP server
+        t = threading.Thread(
+            target=lambda: app.launch(
+                server_port=port, inbrowser=open_browser,
+                show_error=True, prevent_thread_lock=True,
+            ),
+            daemon=True,
+        )
+        t.start()
         return {"launched": True, "port": port, "url": f"http://localhost:{port}"}
     except ImportError as e:
         return {"error": str(e)}

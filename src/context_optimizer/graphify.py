@@ -520,10 +520,12 @@ def update_graph(graph: KnowledgeGraph, root_path: str, changed_files: list[str]
 
     # Filter out old data for changed files
     kept_nodes = [n for n in graph.nodes if n.file not in changed_rel]
+    kept_node_ids = {n.id for n in kept_nodes}
+
+    # Remove edges where source OR target belongs to a changed file
     kept_edges = [
         e for e in graph.edges
-        if not any(nid.startswith(f"file:{f}") or f":{f}:" in nid
-                   for nid in (e.source, e.target) for f in changed_rel)
+        if e.source in kept_node_ids and e.target in kept_node_ids
     ]
 
     # Re-parse changed files

@@ -381,21 +381,32 @@ def optimize_context_structured(
         return {"error": f"Compression failed: {e}"}
 
     if output_format == "json":
-        # Build structured supporting nodes
+        # Use slurp's PageRank+TF-IDF scoring for genuinely relevant supporting nodes
+        from .models import NodeType
+        from .slurp import _compute_combined_scores, _select_nodes
+
+        content_nodes = [n for n in graph.nodes if n.type != NodeType.FILE]
+        if content_nodes:
+            scores = _compute_combined_scores(content_nodes, graph.edges, query)
+            # Pick top-N nodes by score (up to 20)
+            ranked_nodes = sorted(content_nodes, key=lambda n: scores.get(n.id, 0), reverse=True)
+        else:
+            ranked_nodes = []
+
         supporting_nodes = []
-        for n in graph.nodes:
-            if n.content and any(
-                kw in n.content.lower() or kw in n.name.lower()
-                for kw in query.lower().split()
-            ):
-                supporting_nodes.append({
-                    "id": n.id,
-                    "name": n.name,
-                    "type": n.type.value,
-                    "file": n.file,
-                    "lines": f"{n.line_start}-{n.line_end}",
-                    "content_snippet": n.content[:200],
-                })
+        for n in ranked_nodes[:20]:
+            score = scores.get(n.id, 0)
+            if score <= 0:
+                continue
+            supporting_nodes.append({
+                "id": n.id,
+                "name": n.name,
+                "type": n.type.value,
+                "file": n.file,
+                "lines": f"{n.line_start}-{n.line_end}",
+                "relevance_score": round(score, 4),
+                "content_snippet": n.content[:200],
+            })
 
         return {
             "query": query,
