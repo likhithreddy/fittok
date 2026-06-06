@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "context-optimizer"
+version = "0.1.0"
+description = "MCP server that filters and compresses context before it reaches the LLM"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Context Optimizer Contributors" }]
+keywords = ["mcp", "llm", "context", "compression", "code-analysis"]
+
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "pydantic>=2.0",
+    "tiktoken>=0.7.0",
+    "tree-sitter>=0.22.0",
+    "tree-sitter-python>=0.22.0",
+    "tree-sitter-javascript>=0.22.0",
+    "tree-sitter-typescript>=0.22.0",
+    "tree-sitter-java>=0.22.0",
+    "tree-sitter-go>=0.22.0",
+    "tree-sitter-rust>=0.22.0",
+    "networkx>=3.0",
+    "scikit-learn>=1.3",
+    "numpy>=1.24",
+    "llmlingua>=0.0.5",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.0",
+]
+gpu = [
+    "torch>=2.0",
+]
+
+[project.scripts]
+context-optimizer = "context_optimizer.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/context_optimizer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
