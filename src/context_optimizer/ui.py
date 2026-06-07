@@ -6,12 +6,27 @@ Gracefully degrades if either is not installed.
 
 from __future__ import annotations
 
+import html as _html
 import json
 import logging
 import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _iframe_wrap(doc_html: str, height: str = "600px") -> str:
+    """Embed a full HTML document in an iframe via srcdoc.
+
+    Gradio's gr.HTML injects content with innerHTML, where <script> tags never
+    execute — so pyvis (which draws the graph via vis-network JS) renders an
+    empty box. An iframe's srcdoc runs scripts normally, so the graph appears.
+    """
+    srcdoc = _html.escape(doc_html, quote=True)
+    return (
+        f'<iframe srcdoc="{srcdoc}" '
+        f'style="width:100%;height:{height};border:none;background:#fff;"></iframe>'
+    )
 
 
 def _build_graph_html(graph) -> str:
@@ -44,7 +59,7 @@ def _build_graph_html(graph) -> str:
 
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w") as f:
         net.save_graph(f.name)
-        return Path(f.name).read_text()
+        return _iframe_wrap(Path(f.name).read_text(), "600px")
 
 
 def _run_query(graph, query: str, token_budget: int) -> tuple[str, str, dict]:
@@ -85,7 +100,7 @@ def _run_query(graph, query: str, token_budget: int) -> tuple[str, str, dict]:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w") as f:
             net.save_graph(f.name)
-            graph_html = Path(f.name).read_text()
+            graph_html = _iframe_wrap(Path(f.name).read_text(), "400px")
     except ImportError:
         graph_html = ""
 
