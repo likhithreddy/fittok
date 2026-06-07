@@ -34,12 +34,30 @@ def _has_cuda() -> bool:
         return False
 
 
+def _has_mps() -> bool:
+    """Check if Apple Silicon MPS is available."""
+    try:
+        import torch
+        return torch.backends.mps.is_available()
+    except (ImportError, AttributeError):
+        return False
+
+
 def _resolve_device(device: str | None = None) -> str:
-    """Resolve the target device."""
+    """Resolve the target device, preferring CUDA, then MPS, then CPU."""
     dev = device or os.environ.get("CONTEXT_OPTIMIZER_DEVICE", "auto")
     if dev == "auto":
-        return "cuda" if _has_cuda() else "cpu"
+        if _has_cuda():
+            return "cuda"
+        if _has_mps():
+            return "mps"
+        return "cpu"
     return dev
+
+
+def _is_llmlingua2_model(name: str) -> bool:
+    """LLMLingua-2 models are token-classification models loaded differently."""
+    return "llmlingua-2" in name.lower()
 
 
 def _resolve_model(device: str, model_name: str | None = None) -> str:
@@ -66,8 +84,16 @@ def _get_compressor(model_name: str | None = None, device: str | None = None) ->
             "llmlingua is not installed. Install it with: pip install llmlingua"
         )
 
-    logger.info("Initializing LLMLingua PromptCompressor(model=%s, device=%s) ...", name, resolved_device)
-    compressor = PromptCompressor(model_name=name)
+    use_llmlingua2 = _is_llmlingua2_model(name)
+    logger.info(
+        "Initializing LLMLingua PromptCompressor(model=%s, device=%s, use_llmlingua2=%s) ...",
+        name, resolved_device, use_llmlingua2,
+    )
+    compressor = PromptCompressor(
+        model_name=name,
+        device_map=resolved_device,
+        use_llmlingua2=use_llmlingua2,
+    )
     _compressors[name] = compressor
     return compressor
 
