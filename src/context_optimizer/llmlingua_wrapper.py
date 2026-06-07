@@ -15,6 +15,7 @@ import os
 from typing import Optional
 
 from .tokens import count_tokens as _count_tokens
+from .tokens import truncate_to_tokens as _truncate_to_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -155,9 +156,13 @@ def compress_context(
 
     except Exception:
         logger.warning("LLMLingua compression failed, falling back to truncation", exc_info=True)
-        chars_per_token = len(context) / max(original_tokens, 1)
-        target_chars = int(target_tokens * chars_per_token)
-        compressed = context[:target_chars]
+        compressed = _truncate_to_tokens(context, target_tokens)
+
+    # Hard ceiling: LLMLingua's `rate` is approximate, so the model can overshoot
+    # the requested budget. Guarantee the result never exceeds target_tokens.
+    if _count_tokens(compressed) > target_tokens:
+        logger.info("Compressed output exceeded budget; truncating to %d tokens", target_tokens)
+        compressed = _truncate_to_tokens(compressed, target_tokens)
 
     compressed_tokens = _count_tokens(compressed)
     compression_ratio = compressed_tokens / max(original_tokens, 1)

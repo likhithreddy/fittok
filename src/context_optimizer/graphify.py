@@ -31,6 +31,30 @@ _EXT_TO_LANG: dict[str, str] = {
     ".rs": "rust",
 }
 
+# Directories that never contain hand-written source worth indexing.
+# Single source of truth — used by every file-walking entry point below.
+_SKIP_DIRS: set[str] = {
+    "node_modules", ".git", "__pycache__", ".venv", "venv", "env",
+    "dist", "build", ".tox", ".mypy_cache", ".pytest_cache",
+    ".next", ".nuxt", "target", "vendor", ".gradle",
+    # Test-coverage and other generated report output (the usual noise culprits)
+    "coverage", "htmlcov", ".nyc_output", "coverage-report",
+    "out", ".cache", ".turbo", ".parcel-cache", "storybook-static",
+    "bower_components", "site-packages", "__snapshots__",
+}
+
+# Generated / bundled files that are technically valid JS/TS but are not
+# meaningful source (minified bundles, sourcemap shims, etc.).
+_GENERATED_SUFFIXES: tuple[str, ...] = (
+    ".min.js", ".min.ts", ".bundle.js", ".chunk.js", ".min.jsx", ".min.tsx",
+)
+
+
+def _is_generated_file(path: Path) -> bool:
+    """True for minified/bundled files that pollute the graph with noise."""
+    name = path.name.lower()
+    return name.endswith(_GENERATED_SUFFIXES) or ".min." in name
+
 # Tree-sitter query patterns per language
 _QUERY_TEMPLATES: dict[str, list[tuple[NodeType, str]]] = {
     "python": [
@@ -340,17 +364,13 @@ def parse_codebase(root_path: str) -> KnowledgeGraph:
     all_nodes: list[GraphNode] = []
     all_edges: list[GraphEdge] = []
 
-    skip_dirs = {
-        "node_modules", ".git", "__pycache__", ".venv", "venv",
-        "dist", "build", ".tox", ".mypy_cache", ".pytest_cache",
-        ".next", ".nuxt", "target", "vendor", ".gradle",
-    }
-
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
         for filename in filenames:
             filepath = Path(dirpath) / filename
             if filepath.suffix not in _EXT_TO_LANG:
+                continue
+            if _is_generated_file(filepath):
                 continue
             try:
                 file_nodes, file_edges = parse_file(filepath, root)
@@ -407,12 +427,6 @@ def parse_codebase(root_path: str) -> KnowledgeGraph:
 
 # ── Chunked streaming parser ─────────────────────────────────────────────────
 
-_SKIP_DIRS = {
-    "node_modules", ".git", "__pycache__", ".venv", "venv",
-    "dist", "build", ".tox", ".mypy_cache", ".pytest_cache",
-    ".next", ".nuxt", "target", "vendor", ".gradle",
-}
-
 
 def _get_code_files(root_path: str) -> list[Path]:
     """Collect all parseable code files under root."""
@@ -422,7 +436,7 @@ def _get_code_files(root_path: str) -> list[Path]:
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
         for f in filenames:
             p = Path(dirpath) / f
-            if p.suffix in _EXT_TO_LANG:
+            if p.suffix in _EXT_TO_LANG and not _is_generated_file(p):
                 files.append(p)
     return files
 
