@@ -22,6 +22,7 @@ _DEFAULT_MODEL = os.environ.get(
 
 _model = None
 _unavailable = False
+_EMB_CACHE: dict[str, object] = {}  # content-hash -> embedding vector (per process)
 
 
 def _get_model():
@@ -66,12 +67,41 @@ def semantic_scores(nodes: list, query: str) -> Optional[dict[str, float]]:
     if model is None:
         return None
     # Represent each node by its name + content so both signal sources count.
-    texts = [query] + [f"{n.name}\n{n.content or ''}" for n in nodes]
+    node_texts = [f"{n.name}\n{n.content or ''}" for n in nodes]
     try:
-        embs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+        node_embs = _embed_cached(model, node_texts)        # reused across queries
+        query_vec = model.encode([query], normalize_embeddings=True,
+                                 show_progress_bar=False)[0]
     except Exception:
         logger.warning("Embedding encode failed; falling back to lexical scoring", exc_info=True)
         return None
-    query_vec = embs[0]
-    sims = embs[1:] @ query_vec  # normalized vectors → dot product == cosine
+    sims = node_embs @ query_vec  # normalized vectors → dot product == cosine
     return {n.id: float(sims[i]) for i, n in enumerate(nodes)}
+
+
+def _embed_cached(model, texts: list[str]):
+    """Encode texts, reusing a per-process cache keyed by content.
+
+    Node content is stable across queries for a given graph, so without this the
+    server re-embedded thousands of nodes on every call (and N times for an
+    N-query batch) — seconds of wasted compute each time.
+    """
+    import hashlib
+    import numpy as np
+
+    keys = [hashlib.sha256(t.encode("utf-8", "ignore")).hexdigest() for t in texts]
+    out: list = [None] * len(texts)
+    missing_i, missing_t = [], []
+    for i, k in enumerate(keys):
+        cached = _EMB_CACHE.get(k)
+        if cached is None:
+            missing_i.append(i)
+            missing_t.append(texts[i])
+        else:
+            out[i] = cached
+    if missing_t:
+        enc = model.encode(missing_t, normalize_embeddings=True, show_progress_bar=False)
+        for j, i in enumerate(missing_i):
+            _EMB_CACHE[keys[i]] = enc[j]
+            out[i] = enc[j]
+    return np.array(out)

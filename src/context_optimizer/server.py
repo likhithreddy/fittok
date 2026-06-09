@@ -26,6 +26,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from .cache import (
+    CACHE_DIR,
     get_cached_graph,
     set_cached_graph,
     get_cached_query,
@@ -62,10 +63,28 @@ logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
     "context-optimizer",
-    instructions="Filter and compress LLM context using graph-based analysis + LLMLingua. v0.2.0",
+    instructions=(
+        "Retrieves the most relevant REAL source code for a question about a "
+        "codebase, within a token budget. Prefer `optimize_context` for "
+        "'how does X work / where is Y' questions instead of reading files or "
+        "grepping. Call it ONCE per question and answer directly from the "
+        "returned `optimized_context` — do not separately read the files it came "
+        "from, as that negates the token savings."
+    ),
 )
 
 SCRUB_ENABLED = os.environ.get("CONTEXT_OPTIMIZER_SCRUB", "false").lower() in ("true", "1", "yes")
+
+
+def _graph_output_path(resolved: Path) -> str:
+    """Path for the on-disk graph.json — kept under the cache dir, NEVER inside
+    the user's analyzed project (writing a multi-MB graph.json into their repo
+    pollutes it and can get committed)."""
+    import hashlib
+    graphs_dir = os.path.join(CACHE_DIR, "graphs")
+    os.makedirs(graphs_dir, exist_ok=True)
+    key = hashlib.sha256(str(resolved).encode()).hexdigest()[:16]
+    return os.path.join(graphs_dir, f"{resolved.name}-{key}.json")
 
 
 # ── v0.1.0 Tools ─────────────────────────────────────────────────────────────
@@ -81,7 +100,7 @@ def parse_codebase_tool(path: str) -> dict:
     # Check cache
     cached = get_cached_graph(str(resolved))
     if cached is not None:
-        output_path = str(resolved / "graph.json")
+        output_path = _graph_output_path(resolved)
         save_graph(cached, output_path)
         return {
             "graph_json_path": output_path,
@@ -93,7 +112,7 @@ def parse_codebase_tool(path: str) -> dict:
     graph = parse_codebase(str(resolved))
     if SCRUB_ENABLED:
         scrub_graph_content(graph)
-    output_path = str(resolved / "graph.json")
+    output_path = _graph_output_path(resolved)
     graph_json_path = save_graph(graph, output_path)
     set_cached_graph(str(resolved), graph)
 
@@ -165,7 +184,14 @@ def optimize_context_tool(
     query: str,
     token_budget: int = 500,
 ) -> dict:
-    """Full pipeline: parse → query → compress in one call."""
+    """Return the most relevant REAL source code for a question, within a token budget.
+
+    Use this FIRST for any "how does X work / where is Y" question about the
+    codebase, and prefer it over reading files or grepping. Call it ONCE per
+    question: the returned `optimized_context` contains the relevant code —
+    answer directly from it and do NOT separately read the files it came from
+    (that defeats the whole point of the token savings).
+    """
     logger.info("optimize_context: %s (budget=%d)", codebase_path, token_budget)
 
     resolved = Path(codebase_path).resolve()
@@ -182,7 +208,7 @@ def optimize_context_tool(
             graph = parse_codebase(str(resolved))
             if SCRUB_ENABLED:
                 scrub_graph_content(graph)
-            save_graph(graph, str(resolved / "graph.json"))
+            save_graph(graph, _graph_output_path(resolved))
             graph_stats = {"total_nodes": graph.metadata.total_nodes,
                            "total_edges": graph.metadata.total_edges}
             set_cached_graph(str(resolved), graph)
@@ -302,7 +328,7 @@ async def optimize_context_stream(
                 return events
             if SCRUB_ENABLED:
                 scrub_graph_content(graph)
-            save_graph(graph, str(resolved / "graph.json"))
+            save_graph(graph, _graph_output_path(resolved))
             set_cached_graph(str(resolved), graph)
             events.append({"stage": "parsing", "status": "done",
                            "total_nodes": len(graph.nodes), "total_edges": len(graph.edges)})
@@ -349,7 +375,7 @@ def optimize_context_batch(
             graph = parse_codebase(str(resolved))
             if SCRUB_ENABLED:
                 scrub_graph_content(graph)
-            save_graph(graph, str(resolved / "graph.json"))
+            save_graph(graph, _graph_output_path(resolved))
             set_cached_graph(str(resolved), graph)
         except Exception as e:
             return {"error": f"Parse failed: {e}"}
@@ -402,7 +428,7 @@ def optimize_context_structured(
             graph = parse_codebase(str(resolved))
             if SCRUB_ENABLED:
                 scrub_graph_content(graph)
-            save_graph(graph, str(resolved / "graph.json"))
+            save_graph(graph, _graph_output_path(resolved))
             set_cached_graph(str(resolved), graph)
         except Exception as e:
             return {"error": f"Parse failed: {e}"}
@@ -501,7 +527,7 @@ async def parse_codebase_stream_tool(
     if graph:
         if SCRUB_ENABLED:
             scrub_graph_content(graph)
-        output_path = str(resolved / "graph.json")
+        output_path = _graph_output_path(resolved)
         save_graph(graph, output_path)
         set_cached_graph(str(resolved), graph)
         events.append({"status": "saved", "graph_json_path": output_path})
@@ -524,7 +550,7 @@ def watch_start_tool(path: str) -> dict:
         graph = parse_codebase(str(resolved))
         if SCRUB_ENABLED:
             scrub_graph_content(graph)
-        save_graph(graph, str(resolved / "graph.json"))
+        save_graph(graph, _graph_output_path(resolved))
         set_cached_graph(str(resolved), graph)
 
     return start_watch(str(resolved), graph)
@@ -575,7 +601,7 @@ def reset_graph_tool(path: str) -> dict:
     graph = parse_codebase(str(resolved))
     if SCRUB_ENABLED:
         scrub_graph_content(graph)
-    output_path = str(resolved / "graph.json")
+    output_path = _graph_output_path(resolved)
     save_graph(graph, output_path)
     set_cached_graph(str(resolved), graph)
 

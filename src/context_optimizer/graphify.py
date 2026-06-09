@@ -214,6 +214,18 @@ def _node_name(node: Node, source_bytes: bytes) -> str:
             if child.type in ("identifier", "property_identifier"):
                 return _decode(child, source_bytes)
 
+    # 3b. Anonymous function/arrow passed as a call argument (callbacks such as
+    #     useEffect(...), arr.map(...), Zustand create((set) => ...)): name it
+    #     after the enclosing call instead of the useless "() => {".
+    if parent is not None and parent.type == "arguments":
+        call = parent.parent
+        if call is not None and call.type in ("call_expression", "new_expression"):
+            fn = call.child_by_field_name("function")
+            if fn is not None:
+                callee = _decode(fn, source_bytes).split("\n")[0].strip()[:60]
+                if callee:
+                    return f"{callee}()callback"
+
     # 4. Last resort: first line, trimmed
     return _decode(node, source_bytes).split("\n")[0][:80]
 

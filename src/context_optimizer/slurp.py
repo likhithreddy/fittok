@@ -318,9 +318,11 @@ def format_subgraph(nodes: list, token_budget: int) -> str:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-# Below this raw cosine similarity, semantic matches are considered weak and
-# the result is flagged low-confidence (and widened with a file list).
-SEMANTIC_CONFIDENCE_THRESHOLD = 0.30
+# Below this raw cosine similarity, semantic matches are considered weak.
+# Calibrated against real runs (good matches land ~0.35-0.70; genuine misses
+# fall well below): 0.15 flags only true no-matches, avoiding false "low" labels
+# on correct results (which previously nudged the model to re-read files).
+SEMANTIC_CONFIDENCE_THRESHOLD = 0.15
 
 
 def query_graph(
@@ -395,20 +397,14 @@ def query_graph(
 
     markdown = format_subgraph(selected, token_budget)
 
-    # Low-confidence banner + widening: list the most relevant files so the
-    # caller/LLM has somewhere to look even when no node matched strongly.
+    # Low-confidence note: keep it informational and do NOT tell the model to go
+    # read files — that would defeat the token savings. The most relevant code
+    # found is still included below for it to answer from.
     if low_conf:
-        ranked_files: list[str] = []
-        for nid, _s in sorted(scores.items(), key=lambda x: x[1], reverse=True):
-            node = next((n for n in content_nodes if n.id == nid), None)
-            if node and node.file not in ranked_files:
-                ranked_files.append(node.file)
-            if len(ranked_files) >= 10:
-                break
         banner = (
-            f"> ⚠ **Low confidence** (top match {confidence:.2f} via {method}). "
-            f"No code strongly matched the query; this context is best-effort. "
-            f"Most relevant files to inspect: {', '.join(ranked_files)}\n\n"
+            f"> Note: best match was weak ({confidence:.2f} via {method}); the "
+            f"query may not map cleanly to this codebase. The closest relevant "
+            f"code is included below — answer from it.\n\n"
         )
         markdown = banner + markdown
 
