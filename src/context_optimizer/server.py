@@ -189,11 +189,21 @@ def optimize_context_tool(
         except Exception as e:
             return {"error": f"Parse failed: {e}"}
 
-    # Stage 2: Query
+    # Stage 2: Query (with diagnostics: scoring method + confidence)
     slurp_budget = max(token_budget * 8, 4000)
     try:
-        subgraph_md, node_count, tokens_used = _query_graph(graph, query, slurp_budget)
-        slurp_stats = {"selected_nodes": node_count, "tokens_used": tokens_used, "budget": slurp_budget}
+        q = _query_graph(graph, query, slurp_budget, with_diagnostics=True)
+        subgraph_md = q["markdown"]
+        node_count = q["selected_nodes"]
+        tokens_used = q["tokens_used"]
+        slurp_stats = {
+            "selected_nodes": node_count,
+            "tokens_used": tokens_used,
+            "budget": slurp_budget,
+            "method": q["method"],
+            "confidence": q["confidence"],
+            "confidence_label": q["confidence_label"],
+        }
     except Exception as e:
         return {"error": f"Query failed: {e}", "graph_stats": graph_stats}
 
