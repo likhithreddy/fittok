@@ -144,20 +144,63 @@ def _get_parser(lang_name: str) -> Optional[Parser]:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _decode(node: Node, source_bytes: bytes) -> str:
+    return source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
 def _node_name(node: Node, source_bytes: bytes) -> str:
-    """Extract a human-readable name from a definition node."""
+    """Extract a human-readable name from a definition node.
+
+    Handles the modern JS/TS patterns the naive version missed:
+      - ``const Foo = () => {}`` / ``const Foo = function(){}`` (name on the
+        parent ``variable_declarator``)
+      - object methods / assignments (``foo: () => {}``)
+      - exported defaults
+    Without this, anonymous arrow/function expressions get their *parameters*
+    as a "name", which poisons both call-graph resolution and relevance scoring.
+    """
+    # 1. Explicit name field (function_definition, class_definition, method, ...)
+    name_node = node.child_by_field_name("name")
+    if name_node is not None:
+        return _decode(name_node, source_bytes)
+
+    # 2. A direct identifier child
     for child in node.children:
-        if child.type in ("identifier", "name"):
-            return source_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-    text = source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
-    return text.split("\n")[0][:80]
+        if child.type in ("identifier", "name", "property_identifier", "type_identifier"):
+            return _decode(child, source_bytes)
+
+    # 3. Anonymous function/arrow assigned to a variable, property, or field:
+    #    pull the name from the enclosing declarator/pair.
+    parent = node.parent
+    if parent is not None and parent.type in (
+        "variable_declarator", "pair", "assignment_expression",
+        "public_field_definition", "field_definition", "property_signature",
+    ):
+        pn = parent.child_by_field_name("name") or parent.child_by_field_name("key") \
+            or parent.child_by_field_name("left")
+        if pn is not None:
+            return _decode(pn, source_bytes).strip()
+        for child in parent.children:
+            if child.type in ("identifier", "property_identifier"):
+                return _decode(child, source_bytes)
+
+    # 4. Last resort: first line, trimmed
+    return _decode(node, source_bytes).split("\n")[0][:80]
 
 
-def _safe_content(source_bytes: bytes, node: Node, max_chars: int = 2000) -> str:
-    """Extract node content, truncated for storage."""
+_MAX_CONTENT_CHARS = int(os.environ.get("CONTEXT_OPTIMIZER_MAX_NODE_CHARS", "8000"))
+
+
+def _safe_content(source_bytes: bytes, node: Node, max_chars: int | None = None) -> str:
+    """Extract node content, truncated for storage.
+
+    The cap is configurable via CONTEXT_OPTIMIZER_MAX_NODE_CHARS (default 8000,
+    up from 2000) so large functions aren't gutted before relevance scoring.
+    """
+    limit = max_chars if max_chars is not None else _MAX_CONTENT_CHARS
     text = source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n// ... [truncated]"
+    if len(text) > limit:
+        text = text[:limit] + "\n// ... [truncated]"
     return text
 
 
@@ -334,6 +377,14 @@ def parse_file(filepath: Path, root: Path) -> tuple[list[GraphNode], list[GraphE
             target=imp,  # placeholder
             type=EdgeType.IMPORTS,
         ))
+
+    # Fallback: if the file produced no definition nodes (config-like files,
+    # JSX-heavy components, or constructs we don't extract), index the file
+    # body itself so the file is never invisible to retrieval/scoring.
+    if len(nodes) == 1:  # only the file node was added
+        body = _safe_content(source_bytes, tree.root_node)
+        file_node.content = body
+        file_node.token_count = count_tokens(body)
 
     return nodes, edges
 

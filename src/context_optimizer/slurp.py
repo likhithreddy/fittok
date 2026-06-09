@@ -300,8 +300,12 @@ def query_graph(
     if not graph.nodes:
         return "## No nodes found in graph\nThe codebase graph is empty.", 0, 0
 
-    # Filter to content-bearing nodes (skip file nodes for scoring)
-    content_nodes = [n for n in graph.nodes if n.type != NodeType.FILE]
+    # Score content-bearing nodes. Skip *empty* file nodes, but keep file nodes
+    # that were fallback-indexed with body content (so no file is invisible).
+    content_nodes = [
+        n for n in graph.nodes
+        if n.type != NodeType.FILE or (n.content and n.content.strip())
+    ]
 
     if not content_nodes:
         content_nodes = graph.nodes  # fallback to all nodes
