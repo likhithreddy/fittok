@@ -120,6 +120,19 @@ HYBRID_PAGERANK_WEIGHT = 0.30
 NEIGHBOR_DECAY = 0.5
 
 
+_TEST_PENALTY = 0.5  # soft down-weight so implementation outranks tests
+
+
+def _is_test_file(path: str) -> bool:
+    """Heuristic: is this file test code rather than implementation?"""
+    p = path.lower()
+    return (
+        "/tests/" in p or "/test/" in p or "__tests__" in p
+        or p.startswith("test/") or p.startswith("tests/")
+        or ".test." in p or ".spec." in p or p.endswith("_test.py")
+    )
+
+
 def _minmax(d: dict[str, float]) -> dict[str, float]:
     """Min-max normalize a score dict to [0, 1]."""
     if not d:
@@ -352,6 +365,14 @@ def query_graph(
     scores = _compute_combined_scores(
         content_nodes, graph.edges, query, pagerank_weight, tfidf_weight, semantic=semantic
     )
+
+    # Soft down-rank test files so implementation surfaces first — unless the
+    # query is itself about tests.
+    if "test" not in query.lower() and "spec" not in query.lower():
+        file_by_id = {n.id: n.file for n in content_nodes}
+        for nid in list(scores):
+            if _is_test_file(file_by_id.get(nid, "")):
+                scores[nid] *= _TEST_PENALTY
 
     # Confidence = raw top relevance (cosine if semantic, else top TF-IDF cosine).
     if semantic:
