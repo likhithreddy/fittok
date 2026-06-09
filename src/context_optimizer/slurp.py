@@ -109,9 +109,25 @@ def tfidf_scores(
 
 # ── Combined scoring and selection ────────────────────────────────────────────
 
+# Lexical-only weights (no embeddings available)
 PAGERANK_WEIGHT = 0.4
 TFIDF_WEIGHT = 0.6
+# Hybrid weights (semantic embeddings available) — semantic dominates because
+# it is what makes natural-language queries match differently-worded code.
+SEMANTIC_WEIGHT = 0.55
+HYBRID_TFIDF_WEIGHT = 0.15
+HYBRID_PAGERANK_WEIGHT = 0.30
 NEIGHBOR_DECAY = 0.5
+
+
+def _minmax(d: dict[str, float]) -> dict[str, float]:
+    """Min-max normalize a score dict to [0, 1]."""
+    if not d:
+        return {}
+    vals = list(d.values())
+    lo, hi = min(vals), max(vals)
+    rng = hi - lo if hi > lo else 1.0
+    return {k: (v - lo) / rng for k, v in d.items()}
 
 
 def _compute_combined_scores(
@@ -120,33 +136,37 @@ def _compute_combined_scores(
     query: str,
     pagerank_weight: float = PAGERANK_WEIGHT,
     tfidf_weight: float = TFIDF_WEIGHT,
+    semantic: dict[str, float] | None = None,
 ) -> dict[str, float]:
-    """Combine PageRank and TF-IDF into a single relevance score per node."""
+    """Combine PageRank + TF-IDF (+ semantic, if provided) into one score per node.
+
+    When *semantic* embeddings scores are supplied, they dominate the blend;
+    otherwise this is the original PageRank/TF-IDF combination.
+    """
     pr = pagerank(nodes, edges)
     tf = tfidf_scores(nodes, query)
+
+    if semantic:
+        pr_n, tf_n, sem_n = _minmax(pr), _minmax(tf), _minmax(semantic)
+        combined: dict[str, float] = {}
+        for n in nodes:
+            combined[n.id] = (
+                SEMANTIC_WEIGHT * sem_n.get(n.id, 0.0)
+                + HYBRID_TFIDF_WEIGHT * tf_n.get(n.id, 0.0)
+                + HYBRID_PAGERANK_WEIGHT * pr_n.get(n.id, 0.0)
+            )
+        return combined
 
     if not pr:
         return tf
     if not tf:
         return pr
 
-    # Normalize each to [0, 1]
-    pr_vals = list(pr.values())
-    tf_vals = list(tf.values())
-
-    pr_min, pr_max = min(pr_vals), max(pr_vals)
-    tf_min, tf_max = min(tf_vals), max(tf_vals)
-
-    pr_range = pr_max - pr_min if pr_max > pr_min else 1.0
-    tf_range = tf_max - tf_min if tf_max > tf_min else 1.0
-
-    combined: dict[str, float] = {}
-    for n in nodes:
-        pr_norm = (pr.get(n.id, 0) - pr_min) / pr_range
-        tf_norm = (tf.get(n.id, 0) - tf_min) / tf_range
-        combined[n.id] = pagerank_weight * pr_norm + tfidf_weight * tf_norm
-
-    return combined
+    pr_n, tf_n = _minmax(pr), _minmax(tf)
+    return {
+        n.id: pagerank_weight * pr_n.get(n.id, 0.0) + tfidf_weight * tf_n.get(n.id, 0.0)
+        for n in nodes
+    }
 
 
 def _select_nodes(
@@ -285,20 +305,35 @@ def format_subgraph(nodes: list, token_budget: int) -> str:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+# Below this raw cosine similarity, semantic matches are considered weak and
+# the result is flagged low-confidence (and widened with a file list).
+SEMANTIC_CONFIDENCE_THRESHOLD = 0.30
+
+
 def query_graph(
     graph: KnowledgeGraph,
     query: str,
     token_budget: int = 4000,
     pagerank_weight: float = PAGERANK_WEIGHT,
     tfidf_weight: float = TFIDF_WEIGHT,
-) -> tuple[str, int, int]:
+    with_diagnostics: bool = False,
+):
     """Query a knowledge graph and return relevant subgraph markdown.
 
-    Returns:
-        (markdown, selected_node_count, tokens_used)
+    Returns the 3-tuple ``(markdown, selected_node_count, tokens_used)`` by
+    default. With ``with_diagnostics=True`` returns a dict that additionally
+    reports the scoring method, a confidence value/label, and per-node scores —
+    so callers can see *why* a result was produced and whether to trust it.
     """
+    empty_diag = {"markdown": "", "selected_nodes": 0, "tokens_used": 0,
+                  "method": "none", "confidence": 0.0, "confidence_label": "none",
+                  "top_nodes": []}
+
     if not graph.nodes:
-        return "## No nodes found in graph\nThe codebase graph is empty.", 0, 0
+        md = "## No nodes found in graph\nThe codebase graph is empty."
+        if with_diagnostics:
+            return {**empty_diag, "markdown": md}
+        return md, 0, 0
 
     # Score content-bearing nodes. Skip *empty* file nodes, but keep file nodes
     # that were fallback-indexed with body content (so no file is invisible).
@@ -306,20 +341,71 @@ def query_graph(
         n for n in graph.nodes
         if n.type != NodeType.FILE or (n.content and n.content.strip())
     ]
-
     if not content_nodes:
-        content_nodes = graph.nodes  # fallback to all nodes
+        content_nodes = graph.nodes
+
+    # Semantic scoring (None if embeddings unavailable → lexical fallback).
+    from . import embeddings
+    semantic = embeddings.semantic_scores(content_nodes, query)
+    method = "semantic+lexical" if semantic else "lexical"
 
     scores = _compute_combined_scores(
-        content_nodes, graph.edges, query, pagerank_weight, tfidf_weight
+        content_nodes, graph.edges, query, pagerank_weight, tfidf_weight, semantic=semantic
     )
+
+    # Confidence = raw top relevance (cosine if semantic, else top TF-IDF cosine).
+    if semantic:
+        confidence = max(semantic.values()) if semantic else 0.0
+        low_conf = confidence < SEMANTIC_CONFIDENCE_THRESHOLD
+    else:
+        tf = tfidf_scores(content_nodes, query)
+        confidence = max(tf.values()) if tf else 0.0
+        low_conf = confidence < 0.05
+    confidence_label = "low" if low_conf else ("high" if confidence >= 0.5 else "medium")
 
     selected = _select_nodes(content_nodes, graph.edges, scores, token_budget)
 
     if not selected:
-        return "## No relevant nodes found\nTry broadening your query.", 0, 0
+        md = "## No relevant nodes found\nTry broadening your query."
+        if with_diagnostics:
+            return {**empty_diag, "markdown": md, "method": method,
+                    "confidence": confidence, "confidence_label": "low"}
+        return md, 0, 0
 
     markdown = format_subgraph(selected, token_budget)
+
+    # Low-confidence banner + widening: list the most relevant files so the
+    # caller/LLM has somewhere to look even when no node matched strongly.
+    if low_conf:
+        ranked_files: list[str] = []
+        for nid, _s in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+            node = next((n for n in content_nodes if n.id == nid), None)
+            if node and node.file not in ranked_files:
+                ranked_files.append(node.file)
+            if len(ranked_files) >= 10:
+                break
+        banner = (
+            f"> ⚠ **Low confidence** (top match {confidence:.2f} via {method}). "
+            f"No code strongly matched the query; this context is best-effort. "
+            f"Most relevant files to inspect: {', '.join(ranked_files)}\n\n"
+        )
+        markdown = banner + markdown
+
     tokens_used = count_tokens(markdown)
+
+    if with_diagnostics:
+        top_nodes = [
+            {"id": nid, "score": round(s, 4)}
+            for nid, s in sorted(scores.items(), key=lambda x: x[1], reverse=True)[:10]
+        ]
+        return {
+            "markdown": markdown,
+            "selected_nodes": len(selected),
+            "tokens_used": tokens_used,
+            "method": method,
+            "confidence": round(confidence, 4),
+            "confidence_label": confidence_label,
+            "top_nodes": top_nodes,
+        }
 
     return markdown, len(selected), tokens_used
