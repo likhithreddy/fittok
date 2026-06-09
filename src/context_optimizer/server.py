@@ -189,48 +189,48 @@ def optimize_context_tool(
         except Exception as e:
             return {"error": f"Parse failed: {e}"}
 
-    # Stage 2: Query (with diagnostics: scoring method + confidence)
-    slurp_budget = max(token_budget * 8, 4000)
+    # Stage 2: Select readable relevant code within the budget.
+    # Selection IS the compression — we return real source (trimmed to budget),
+    # not LLMLingua-compressed text, so the model can answer from it directly
+    # instead of re-reading files (which previously negated the token savings).
     try:
-        q = _query_graph(graph, query, slurp_budget, with_diagnostics=True)
-        subgraph_md = q["markdown"]
-        node_count = q["selected_nodes"]
-        tokens_used = q["tokens_used"]
-        slurp_stats = {
-            "selected_nodes": node_count,
-            "tokens_used": tokens_used,
-            "budget": slurp_budget,
-            "method": q["method"],
-            "confidence": q["confidence"],
-            "confidence_label": q["confidence_label"],
-        }
+        readable, ctx_stats, files = _select_readable_context(graph, query, token_budget)
     except Exception as e:
         return {"error": f"Query failed: {e}", "graph_stats": graph_stats}
 
-    # Stage 3: Compress
-    try:
-        compression = _compress(context=subgraph_md, question=query, target_tokens=token_budget)
-        compression_stats = {
-            "original_tokens": compression["original_tokens"],
-            "compressed_tokens": compression["compressed_tokens"],
-            "compression_ratio": compression["compression_ratio"],
-        }
-    except Exception as e:
-        return {"error": f"Compression failed: {e}", "graph_stats": graph_stats,
-                "slurp_stats": slurp_stats, "optimized_context": subgraph_md}
-
-    # Savings report: compare what the LLM receives via the MCP against the
-    # realistic no-MCP baseline — reading the whole files the answer lives in.
-    savings = _compute_savings(resolved, q.get("files", []),
-                               compression["compressed_tokens"])
+    savings = _compute_savings(resolved, files, ctx_stats["tokens_sent"])
 
     return {
-        "optimized_context": compression["compressed"],
+        "optimized_context": readable,
         "graph_stats": graph_stats,
-        "slurp_stats": slurp_stats,
-        "compression_stats": compression_stats,
+        "slurp_stats": ctx_stats,
         "savings": savings,
     }
+
+
+def _select_readable_context(graph, query: str, token_budget: int):
+    """Select the most relevant *real* source within the token budget.
+
+    Returns (readable_markdown, stats, files). Unlike the old pipeline this
+    returns actual code trimmed to the budget — not lossy LLMLingua output — so
+    it stays usable and the model doesn't fall back to reading whole files.
+    """
+    from .tokens import count_tokens, truncate_to_tokens
+    q = _query_graph(graph, query, token_budget, with_diagnostics=True)
+    readable = q["markdown"]
+    if count_tokens(readable) > token_budget:
+        readable = truncate_to_tokens(readable, token_budget)
+    tokens_sent = count_tokens(readable)
+    stats = {
+        "selected_nodes": q["selected_nodes"],
+        "tokens_sent": tokens_sent,
+        "budget": token_budget,
+        "method": q["method"],
+        "confidence": q["confidence"],
+        "confidence_label": q["confidence_label"],
+        "mode": "readable",
+    }
+    return readable, stats, q.get("files", [])
 
 
 def _compute_savings(root: Path, rel_files: list[str], tokens_sent: int) -> dict:
@@ -310,26 +310,17 @@ async def optimize_context_stream(
             events.append({"stage": "parsing", "status": "error", "error": str(e)})
             return events
 
-    # Stage 2: Query
-    events.append({"stage": "query", "status": "started"})
-    slurp_budget = max(token_budget * 8, 4000)
+    # Stage 2: Select readable relevant code within budget (no lossy compression)
+    events.append({"stage": "select", "status": "started"})
     try:
-        subgraph_md, node_count, tokens_used = _query_graph(graph, query, slurp_budget)
-        events.append({"stage": "query", "status": "done",
-                       "selected_nodes": node_count, "subgraph_tokens": tokens_used})
+        readable, ctx_stats, _files = _select_readable_context(graph, query, token_budget)
+        events.append({"stage": "select", "status": "done",
+                       "optimized_context": readable,
+                       "tokens_sent": ctx_stats["tokens_sent"],
+                       "selected_nodes": ctx_stats["selected_nodes"],
+                       "confidence": ctx_stats["confidence"]})
     except Exception as e:
-        events.append({"stage": "query", "status": "error", "error": str(e)})
-        return events
-
-    # Stage 3: Compress
-    events.append({"stage": "compress", "status": "started"})
-    try:
-        compression = _compress(context=subgraph_md, question=query, target_tokens=token_budget)
-        events.append({"stage": "compress", "status": "done",
-                       "optimized_context": compression["compressed"],
-                       "compressed_tokens": compression["compressed_tokens"]})
-    except Exception as e:
-        events.append({"stage": "compress", "status": "error", "error": str(e)})
+        events.append({"stage": "select", "status": "error", "error": str(e)})
 
     return events
 
@@ -366,18 +357,17 @@ def optimize_context_batch(
     graph_stats = {"total_nodes": graph.metadata.total_nodes,
                    "total_edges": graph.metadata.total_edges}
 
-    # Per-query pipeline
+    # Per-query pipeline — readable selected code within budget (no lossy compression)
     results: list[dict] = []
     for q in queries:
-        slurp_budget = max(token_budget * 8, 4000)
         try:
-            subgraph_md, _node_count, _tokens_used = _query_graph(graph, q, slurp_budget)
-            compression = _compress(context=subgraph_md, question=q, target_tokens=token_budget)
+            readable, ctx_stats, _files = _select_readable_context(graph, q, token_budget)
             results.append({
                 "query": q,
-                "optimized_context": compression["compressed"],
-                "compressed_tokens": compression["compressed_tokens"],
-                "selected_nodes": _node_count,
+                "optimized_context": readable,
+                "tokens_sent": ctx_stats["tokens_sent"],
+                "selected_nodes": ctx_stats["selected_nodes"],
+                "confidence": ctx_stats["confidence"],
             })
         except Exception as e:
             results.append({"query": q, "error": str(e)})
