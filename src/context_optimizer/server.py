@@ -219,11 +219,49 @@ def optimize_context_tool(
         return {"error": f"Compression failed: {e}", "graph_stats": graph_stats,
                 "slurp_stats": slurp_stats, "optimized_context": subgraph_md}
 
+    # Savings report: compare what the LLM receives via the MCP against the
+    # realistic no-MCP baseline — reading the whole files the answer lives in.
+    savings = _compute_savings(resolved, q.get("files", []),
+                               compression["compressed_tokens"])
+
     return {
         "optimized_context": compression["compressed"],
         "graph_stats": graph_stats,
         "slurp_stats": slurp_stats,
         "compression_stats": compression_stats,
+        "savings": savings,
+    }
+
+
+def _compute_savings(root: Path, rel_files: list[str], tokens_sent: int) -> dict:
+    """Estimate tokens saved vs. the no-MCP baseline (reading the whole files).
+
+    Baseline = total tokens of the full source files the selected context came
+    from — a realistic stand-in for "without the MCP, the LLM reads these files."
+    """
+    from .tokens import count_tokens
+    baseline = 0
+    counted = 0
+    for rel in rel_files:
+        try:
+            text = (root / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        baseline += count_tokens(text)
+        counted += 1
+    saved = max(baseline - tokens_sent, 0)
+    pct = round(100.0 * saved / baseline, 1) if baseline else 0.0
+    return {
+        "tokens_sent_with_mcp": tokens_sent,
+        "baseline_full_files_tokens": baseline,
+        "files_counted": counted,
+        "tokens_saved": saved,
+        "reduction_pct": pct,
+        "summary": (
+            f"Sent {tokens_sent} tokens instead of {baseline} "
+            f"({pct}% reduction across {counted} file(s))"
+            if baseline else "No baseline files available to compare."
+        ),
     }
 
 

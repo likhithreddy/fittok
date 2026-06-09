@@ -406,6 +406,7 @@ def query_graph(
             "confidence": round(confidence, 4),
             "confidence_label": confidence_label,
             "top_nodes": top_nodes,
+            "files": sorted({n.file for n in selected}),
         }
 
     return markdown, len(selected), tokens_used
