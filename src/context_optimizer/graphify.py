@@ -25,10 +25,24 @@ _EXT_TO_LANG: dict[str, str] = {
     ".js": "javascript",
     ".jsx": "javascript",
     ".ts": "typescript",
-    ".tsx": "typescript",
+    ".tsx": "tsx",       # tsx needs the dedicated tree-sitter-typescript TSX grammar
     ".java": "java",
     ".go": "go",
     ".rs": "rust",
+}
+
+# Maps internal language name -> (pip module, attribute returning the grammar).
+# tree-sitter-typescript is the notable case: it exposes language_typescript /
+# language_tsx (NOT a bare `language`), so .ts/.tsx files parsed to nothing
+# before this mapping existed.
+_LANG_MODULE: dict[str, tuple[str, str]] = {
+    "python": ("tree_sitter_python", "language"),
+    "javascript": ("tree_sitter_javascript", "language"),
+    "typescript": ("tree_sitter_typescript", "language_typescript"),
+    "tsx": ("tree_sitter_typescript", "language_tsx"),
+    "java": ("tree_sitter_java", "language"),
+    "go": ("tree_sitter_go", "language"),
+    "rust": ("tree_sitter_rust", "language"),
 }
 
 # Directories that never contain hand-written source worth indexing.
@@ -76,6 +90,13 @@ _QUERY_TEMPLATES: dict[str, list[tuple[NodeType, str]]] = {
         (NodeType.METHOD, "method_definition"),
         (NodeType.METHOD, "public_field_definition"),
     ],
+    "tsx": [
+        (NodeType.FUNCTION, "function_declaration"),
+        (NodeType.FUNCTION, "arrow_function"),
+        (NodeType.CLASS, "class_declaration"),
+        (NodeType.METHOD, "method_definition"),
+        (NodeType.METHOD, "public_field_definition"),
+    ],
     "java": [
         (NodeType.FUNCTION, "method_declaration"),
         (NodeType.CLASS, "class_declaration"),
@@ -107,15 +128,24 @@ def _get_language(lang_name: str) -> Optional[Language]:
     if lang_name in _LANGUAGE_MAP:
         return _LANGUAGE_MAP[lang_name]
 
+    module_name, attr_name = _LANG_MODULE.get(
+        lang_name, (f"tree_sitter_{lang_name}", "language")
+    )
     try:
-        mod = __import__(f"tree_sitter_{lang_name}")
+        mod = __import__(module_name)
     except ImportError:
-        logger.warning("tree-sitter language package not found: %s", lang_name)
+        logger.warning("tree-sitter language package not found: %s", module_name)
         return None
 
-    lang_attr = getattr(mod, "language", None)
+    # Prefer the mapped attribute, then fall back to a bare `language` or
+    # `language_<name>` so grammars with either convention work.
+    lang_attr = (
+        getattr(mod, attr_name, None)
+        or getattr(mod, "language", None)
+        or getattr(mod, f"language_{lang_name}", None)
+    )
     if lang_attr is None:
-        logger.warning("tree_sitter_%s has no 'language' attribute", lang_name)
+        logger.warning("%s exposes no usable language function (tried %r)", module_name, attr_name)
         return None
 
     # tree-sitter >= 0.22: language() returns a PyCapsule → wrap in Language()
@@ -329,6 +359,7 @@ def parse_file(filepath: Path, root: Path) -> tuple[list[GraphNode], list[GraphE
         "python": {"import_statement", "import_from_statement"},
         "javascript": {"import_statement", "require_clause"},
         "typescript": {"import_statement", "require_clause"},
+        "tsx": {"import_statement", "require_clause"},
         "java": {"import_declaration"},
         "go": {"import_declaration"},
         "rust": {"use_declaration"},

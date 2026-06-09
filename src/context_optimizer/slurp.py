@@ -253,7 +253,7 @@ _LANG_FROM_EXT = {
     ".js": "javascript",
     ".jsx": "javascript",
     ".ts": "typescript",
-    ".tsx": "typescript",
+    ".tsx": "tsx",
     ".java": "java",
     ".go": "go",
     ".rs": "rust",
