@@ -324,11 +324,57 @@ def format_subgraph(nodes: list, token_budget: int) -> str:
 # on correct results (which previously nudged the model to re-read files).
 SEMANTIC_CONFIDENCE_THRESHOLD = 0.15
 
+# Adaptive budgeting bounds. When token_budget <= 0 the budget is sized from how
+# much is actually relevant (sum of clearly-relevant nodes' tokens), clamped to
+# this range. A hard MAX also caps explicit budgets so a stray huge value (e.g.
+# the model passing 64000) can't blow up context.
+ADAPTIVE_MIN = 1500
+ADAPTIVE_MAX = 8000
+MAX_BUDGET = 16000
+ADAPTIVE_ABS_THRESHOLD = 0.28   # raw cosine: nodes this similar count as "clearly relevant"
+ADAPTIVE_REL_FRACTION = 0.6     # lexical fallback: fraction of top score
+
+
+def _resolve_budget(token_budget: int, nodes: list, scores: dict[str, float],
+                    relevance: dict[str, float] | None = None) -> int:
+    """Compute the effective token budget.
+
+    token_budget > 0 → honor it, capped at MAX_BUDGET.
+    token_budget <= 0 → adaptive: sum the tokens of *clearly-relevant* nodes,
+    clamped to [MIN, MAX]. When raw semantic similarities are available, relevance
+    is judged on an absolute cosine threshold (so a narrow question with few
+    strong matches yields a small budget); otherwise a relative cliff on the
+    normalized lexical scores.
+    """
+    if token_budget > 0:
+        return min(token_budget, MAX_BUDGET)
+
+    use_abs = relevance is not None and len(relevance) > 0
+    src = relevance if use_abs else scores
+    if not src:
+        return ADAPTIVE_MIN
+    if use_abs:
+        threshold = ADAPTIVE_ABS_THRESHOLD
+    else:
+        top = max(src.values())
+        if top <= 0:
+            return ADAPTIVE_MIN
+        threshold = ADAPTIVE_REL_FRACTION * top
+
+    node_by_id = {n.id: n for n in nodes}
+    total = 0
+    for nid, s in src.items():
+        if s >= threshold:
+            n = node_by_id.get(nid)
+            if n is not None:
+                total += count_tokens(n.content) if n.content else count_tokens(n.name) + 10
+    return max(ADAPTIVE_MIN, min(total, ADAPTIVE_MAX))
+
 
 def query_graph(
     graph: KnowledgeGraph,
     query: str,
-    token_budget: int = 4000,
+    token_budget: int = 0,
     pagerank_weight: float = PAGERANK_WEIGHT,
     tfidf_weight: float = TFIDF_WEIGHT,
     with_diagnostics: bool = False,
@@ -386,7 +432,11 @@ def query_graph(
         low_conf = confidence < 0.05
     confidence_label = "low" if low_conf else ("high" if confidence >= 0.5 else "medium")
 
-    selected = _select_nodes(content_nodes, graph.edges, scores, token_budget)
+    # Resolve the effective budget (adaptive when token_budget <= 0). Use raw
+    # semantic similarities for an absolute relevance judgment when available.
+    effective_budget = _resolve_budget(token_budget, content_nodes, scores, relevance=semantic)
+
+    selected = _select_nodes(content_nodes, graph.edges, scores, effective_budget)
 
     if not selected:
         md = "## No relevant nodes found\nTry broadening your query."
@@ -395,7 +445,7 @@ def query_graph(
                     "confidence": confidence, "confidence_label": "low"}
         return md, 0, 0
 
-    markdown = format_subgraph(selected, token_budget)
+    markdown = format_subgraph(selected, effective_budget)
 
     # Low-confidence note: keep it informational and do NOT tell the model to go
     # read files — that would defeat the token savings. The most relevant code
@@ -419,6 +469,8 @@ def query_graph(
             "markdown": markdown,
             "selected_nodes": len(selected),
             "tokens_used": tokens_used,
+            "budget": effective_budget,
+            "budget_mode": "adaptive" if token_budget <= 0 else "explicit",
             "method": method,
             "confidence": round(confidence, 4),
             "confidence_label": confidence_label,

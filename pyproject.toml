@@ -7,7 +7,7 @@ name = "context-optimizer"
 version = "0.2.0"
 description = "MCP server that filters and compresses context before it reaches the LLM"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Context Optimizer Contributors" }]
 keywords = ["mcp", "llm", "context", "compression", "code-analysis"]
@@ -26,6 +26,7 @@ dependencies = [
     "networkx>=3.0",
     "scikit-learn>=1.3",
     "numpy>=1.24",
+    "sentence-transformers>=2.2",
     "llmlingua>=0.0.5",
     "python-dotenv>=1.0",
     "diskcache>=5.0",

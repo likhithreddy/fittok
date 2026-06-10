@@ -182,7 +182,7 @@ def compress_context_tool(
 def optimize_context_tool(
     codebase_path: str,
     query: str,
-    token_budget: int = 500,
+    token_budget: int = 0,  # 0 = adaptive (auto-sized from relevance)
 ) -> dict:
     """Return the most relevant REAL source code for a question, within a token budget.
 
@@ -243,14 +243,16 @@ def _select_readable_context(graph, query: str, token_budget: int):
     """
     from .tokens import count_tokens, truncate_to_tokens
     q = _query_graph(graph, query, token_budget, with_diagnostics=True)
+    eff_budget = q.get("budget", token_budget) or 0
     readable = q["markdown"]
-    if count_tokens(readable) > token_budget:
-        readable = truncate_to_tokens(readable, token_budget)
+    if eff_budget > 0 and count_tokens(readable) > eff_budget:
+        readable = truncate_to_tokens(readable, eff_budget)
     tokens_sent = count_tokens(readable)
     stats = {
         "selected_nodes": q["selected_nodes"],
         "tokens_sent": tokens_sent,
-        "budget": token_budget,
+        "budget": eff_budget,
+        "budget_mode": q.get("budget_mode", "explicit"),
         "method": q["method"],
         "confidence": q["confidence"],
         "confidence_label": q["confidence_label"],
@@ -297,7 +299,7 @@ def _compute_savings(root: Path, rel_files: list[str], tokens_sent: int) -> dict
 async def optimize_context_stream(
     codebase_path: str,
     query: str,
-    token_budget: int = 500,
+    token_budget: int = 0,  # 0 = adaptive (auto-sized from relevance)
 ) -> list[dict]:
     """Streaming pipeline: yields stage-by-stage progress events.
 
@@ -357,7 +359,7 @@ async def optimize_context_stream(
 def optimize_context_batch(
     codebase_path: str,
     queries: list[str],
-    token_budget: int = 500,
+    token_budget: int = 0,  # 0 = adaptive (auto-sized from relevance)
 ) -> dict:
     """One parse, many queries. Builds graph once, runs slurp+compress per query."""
     logger.info("optimize_context_batch: %s (%d queries)", codebase_path, len(queries))
@@ -407,7 +409,7 @@ def optimize_context_batch(
 def optimize_context_structured(
     codebase_path: str,
     query: str,
-    token_budget: int = 500,
+    token_budget: int = 0,  # 0 = adaptive (auto-sized from relevance)
     output_format: str = "markdown",
 ) -> dict:
     """Full pipeline with structured JSON output mode.
@@ -433,16 +435,10 @@ def optimize_context_structured(
         except Exception as e:
             return {"error": f"Parse failed: {e}"}
 
-    slurp_budget = max(token_budget * 8, 4000)
     try:
-        subgraph_md, _node_count, _tokens_used = _query_graph(graph, query, slurp_budget)
+        readable, ctx_stats, _files = _select_readable_context(graph, query, token_budget)
     except Exception as e:
         return {"error": f"Query failed: {e}"}
-
-    try:
-        compression = _compress(context=subgraph_md, question=query, target_tokens=token_budget)
-    except Exception as e:
-        return {"error": f"Compression failed: {e}"}
 
     if output_format == "json":
         # Use slurp's PageRank+TF-IDF scoring for genuinely relevant supporting nodes
@@ -474,29 +470,21 @@ def optimize_context_structured(
 
         return {
             "query": query,
-            "answer": compression["compressed"],
+            "answer": readable,
             "supporting_nodes": supporting_nodes[:20],
             "graph_stats": {
                 "total_nodes": graph.metadata.total_nodes,
                 "total_edges": graph.metadata.total_edges,
             },
-            "compression_stats": {
-                "original_tokens": compression["original_tokens"],
-                "compressed_tokens": compression["compressed_tokens"],
-                "compression_ratio": compression["compression_ratio"],
-            },
+            "slurp_stats": ctx_stats,
         }
 
     # Default: markdown
     return {
-        "optimized_context": compression["compressed"],
+        "optimized_context": readable,
         "graph_stats": {"total_nodes": graph.metadata.total_nodes,
                         "total_edges": graph.metadata.total_edges},
-        "compression_stats": {
-            "original_tokens": compression["original_tokens"],
-            "compressed_tokens": compression["compressed_tokens"],
-            "compression_ratio": compression["compression_ratio"],
-        },
+        "slurp_stats": ctx_stats,
     }
 
 
