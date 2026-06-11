@@ -4,13 +4,24 @@ build-backend = "hatchling.build"
 
 [project]
 name = "context-optimizer"
-version = "0.2.0"
-description = "MCP server that filters and compresses context before it reaches the LLM"
+version = "0.3.0"
+description = "MCP server that retrieves the most relevant source code for a query, within a token budget"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Context Optimizer Contributors" }]
-keywords = ["mcp", "llm", "context", "compression", "code-analysis"]
+keywords = ["mcp", "llm", "context", "code-analysis", "retrieval", "embeddings"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 dependencies = [
     "mcp[cli]>=1.0.0",
@@ -27,6 +38,10 @@ dependencies = [
     "scikit-learn>=1.3",
     "numpy>=1.24",
     "sentence-transformers>=2.2",
+    # llmlingua is only used by the standalone compress_context tool; it pulls in
+    # transformers, which MUST stay <5 — transformers 5.x breaks llmlingua's
+    # model loading (the bug we hit). Pin it so a fresh install just works.
+    "transformers>=4.41,<5",
     "llmlingua>=0.0.5",
     "python-dotenv>=1.0",
     "diskcache>=5.0",
@@ -46,6 +61,11 @@ ui = [
     "gradio>=4.0",
     "pyvis>=0.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/siliconagent-ai/fittok-mcp"
+Repository = "https://github.com/siliconagent-ai/fittok-mcp"
+Issues = "https://github.com/siliconagent-ai/fittok-mcp/issues"
 
 [project.scripts]
 context-optimizer = "context_optimizer.server:main"

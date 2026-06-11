@@ -1,3 +1,3 @@
-"""Context Optimizer — MCP server for LLM context filtering and compression."""
+"""Context Optimizer — MCP server for relevant-code retrieval within a token budget."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
