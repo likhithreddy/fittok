@@ -156,6 +156,26 @@ def set_cached_compression(context: str, question: str, target_tokens: int, resu
     cache.set(key, result, expire=3600)
 
 
+# ── Embedding cache (persistent, content-keyed) ──────────────────────────────
+# Content-keyed means this is incremental by nature: an unchanged function keeps
+# its embedding across restarts and edits; only new/changed code is re-embedded.
+
+def get_cached_embedding(content_hash: str):
+    """Return a persisted embedding vector for a content hash, or None."""
+    cache = _get_cache()
+    if cache is None:
+        return None
+    return cache.get(f"emb:{content_hash}")
+
+
+def set_cached_embedding(content_hash: str, vector) -> None:
+    """Persist an embedding vector (30-day TTL)."""
+    cache = _get_cache()
+    if cache is None:
+        return
+    cache.set(f"emb:{content_hash}", vector, expire=3600 * 24 * 30)
+
+
 # ── Cache management ─────────────────────────────────────────────────────────
 
 def clear_cache(scope: str = "all") -> dict:

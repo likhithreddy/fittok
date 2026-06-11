@@ -88,20 +88,28 @@ def _embed_cached(model, texts: list[str]):
     """
     import hashlib
     import numpy as np
+    from . import cache as _cache
 
     keys = [hashlib.sha256(t.encode("utf-8", "ignore")).hexdigest() for t in texts]
     out: list = [None] * len(texts)
     missing_i, missing_t = [], []
     for i, k in enumerate(keys):
-        cached = _EMB_CACHE.get(k)
-        if cached is None:
+        # L1: in-process cache
+        vec = _EMB_CACHE.get(k)
+        if vec is None:
+            # L2: persistent disk cache (survives restarts; incremental by content)
+            vec = _cache.get_cached_embedding(k)
+            if vec is not None:
+                _EMB_CACHE[k] = vec
+        if vec is None:
             missing_i.append(i)
             missing_t.append(texts[i])
         else:
-            out[i] = cached
+            out[i] = vec
     if missing_t:
         enc = model.encode(missing_t, normalize_embeddings=True, show_progress_bar=False)
         for j, i in enumerate(missing_i):
             _EMB_CACHE[keys[i]] = enc[j]
+            _cache.set_cached_embedding(keys[i], enc[j])
             out[i] = enc[j]
     return np.array(out)

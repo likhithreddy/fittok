@@ -49,6 +49,7 @@ ui = [
 
 [project.scripts]
 context-optimizer = "context_optimizer.server:main"
+context-optimizer-index = "context_optimizer.indexer:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/context_optimizer"]
