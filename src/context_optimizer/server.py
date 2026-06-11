@@ -220,7 +220,7 @@ def optimize_context_tool(
     # not LLMLingua-compressed text, so the model can answer from it directly
     # instead of re-reading files (which previously negated the token savings).
     try:
-        readable, ctx_stats, files = _select_readable_context(graph, query, token_budget)
+        readable, ctx_stats, files = _select_readable_context(graph, query, token_budget, codebase_key=str(resolved))
     except Exception as e:
         return {"error": f"Query failed: {e}", "graph_stats": graph_stats}
 
@@ -234,15 +234,37 @@ def optimize_context_tool(
     }
 
 
-def _select_readable_context(graph, query: str, token_budget: int):
+# Per-codebase memory of recently-returned node IDs, so fanned-out / repeated
+# calls don't re-send the same code. Capped FIFO; rotates naturally.
+_RECENT_RETURNED: dict[str, list] = {}
+_RECENT_CAP = 250
+
+
+def _record_returned(key: str, ids: list) -> None:
+    lst = _RECENT_RETURNED.setdefault(key, [])
+    seen = set(lst)
+    for i in ids:
+        if i not in seen:
+            lst.append(i)
+            seen.add(i)
+    if len(lst) > _RECENT_CAP:
+        del lst[: len(lst) - _RECENT_CAP]
+
+
+def _select_readable_context(graph, query: str, token_budget: int, codebase_key: str | None = None):
     """Select the most relevant *real* source within the token budget.
 
     Returns (readable_markdown, stats, files). Unlike the old pipeline this
     returns actual code trimmed to the budget — not lossy LLMLingua output — so
     it stays usable and the model doesn't fall back to reading whole files.
+    When codebase_key is given, nodes returned by recent calls are excluded so
+    repeated/fanned-out queries don't re-send the same code.
     """
     from .tokens import count_tokens, truncate_to_tokens
-    q = _query_graph(graph, query, token_budget, with_diagnostics=True)
+    exclude = set(_RECENT_RETURNED.get(codebase_key, [])) if codebase_key else None
+    q = _query_graph(graph, query, token_budget, with_diagnostics=True, exclude_ids=exclude)
+    if codebase_key:
+        _record_returned(codebase_key, q.get("selected_ids", []))
     eff_budget = q.get("budget", token_budget) or 0
     readable = q["markdown"]
     if eff_budget > 0 and count_tokens(readable) > eff_budget:
@@ -341,7 +363,7 @@ async def optimize_context_stream(
     # Stage 2: Select readable relevant code within budget (no lossy compression)
     events.append({"stage": "select", "status": "started"})
     try:
-        readable, ctx_stats, _files = _select_readable_context(graph, query, token_budget)
+        readable, ctx_stats, _files = _select_readable_context(graph, query, token_budget, codebase_key=str(resolved))
         events.append({"stage": "select", "status": "done",
                        "optimized_context": readable,
                        "tokens_sent": ctx_stats["tokens_sent"],
@@ -389,7 +411,7 @@ def optimize_context_batch(
     results: list[dict] = []
     for q in queries:
         try:
-            readable, ctx_stats, _files = _select_readable_context(graph, q, token_budget)
+            readable, ctx_stats, _files = _select_readable_context(graph, q, token_budget, codebase_key=str(resolved))
             results.append({
                 "query": q,
                 "optimized_context": readable,
@@ -436,7 +458,7 @@ def optimize_context_structured(
             return {"error": f"Parse failed: {e}"}
 
     try:
-        readable, ctx_stats, _files = _select_readable_context(graph, query, token_budget)
+        readable, ctx_stats, _files = _select_readable_context(graph, query, token_budget, codebase_key=str(resolved))
     except Exception as e:
         return {"error": f"Query failed: {e}"}
 

@@ -328,9 +328,9 @@ SEMANTIC_CONFIDENCE_THRESHOLD = 0.15
 # much is actually relevant (sum of clearly-relevant nodes' tokens), clamped to
 # this range. A hard MAX also caps explicit budgets so a stray huge value (e.g.
 # the model passing 64000) can't blow up context.
-ADAPTIVE_MIN = 1500
-ADAPTIVE_MAX = 5000   # keep responses small enough to stay inline (Claude Code
-MAX_BUDGET = 6000     # spills >~10k tool results to disk → model re-reads them)
+ADAPTIVE_MIN = 1200
+ADAPTIVE_MAX = 3500   # keep each response small so even several calls stay bounded
+MAX_BUDGET = 4000     # (Claude Code spills >~10k tool results to disk → re-reads)
 ADAPTIVE_ABS_THRESHOLD = 0.28   # raw cosine: nodes this similar count as "clearly relevant"
 ADAPTIVE_REL_FRACTION = 0.6     # lexical fallback: fraction of top score
 
@@ -378,6 +378,7 @@ def query_graph(
     pagerank_weight: float = PAGERANK_WEIGHT,
     tfidf_weight: float = TFIDF_WEIGHT,
     with_diagnostics: bool = False,
+    exclude_ids: set | None = None,
 ):
     """Query a knowledge graph and return relevant subgraph markdown.
 
@@ -404,6 +405,14 @@ def query_graph(
     ]
     if not content_nodes:
         content_nodes = graph.nodes
+
+    # Cross-call dedup: drop nodes already returned by a recent call so repeated
+    # / fanned-out queries don't re-send the same code. Ignored if it would
+    # leave nothing to select.
+    if exclude_ids:
+        filtered = [n for n in content_nodes if n.id not in exclude_ids]
+        if filtered:
+            content_nodes = filtered
 
     # Semantic scoring (None if embeddings unavailable → lexical fallback).
     from . import embeddings
@@ -476,6 +485,7 @@ def query_graph(
             "confidence_label": confidence_label,
             "top_nodes": top_nodes,
             "files": sorted({n.file for n in selected}),
+            "selected_ids": [n.id for n in selected],
         }
 
     return markdown, len(selected), tokens_used
