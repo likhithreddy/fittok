@@ -68,7 +68,7 @@ Repository = "https://github.com/siliconagent-ai/fittok-mcp"
 Issues = "https://github.com/siliconagent-ai/fittok-mcp/issues"
 
 [project.scripts]
-context-optimizer = "context_optimizer.server:main"
+context-optimizer = "context_optimizer.cli:main"
 context-optimizer-index = "context_optimizer.indexer:main"
 
 [tool.hatch.build.targets.wheel]
