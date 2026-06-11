@@ -329,8 +329,8 @@ SEMANTIC_CONFIDENCE_THRESHOLD = 0.15
 # this range. A hard MAX also caps explicit budgets so a stray huge value (e.g.
 # the model passing 64000) can't blow up context.
 ADAPTIVE_MIN = 1500
-ADAPTIVE_MAX = 8000
-MAX_BUDGET = 16000
+ADAPTIVE_MAX = 5000   # keep responses small enough to stay inline (Claude Code
+MAX_BUDGET = 6000     # spills >~10k tool results to disk → model re-reads them)
 ADAPTIVE_ABS_THRESHOLD = 0.28   # raw cosine: nodes this similar count as "clearly relevant"
 ADAPTIVE_REL_FRACTION = 0.6     # lexical fallback: fraction of top score
 
