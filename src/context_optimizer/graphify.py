@@ -65,9 +65,9 @@ _GENERATED_SUFFIXES: tuple[str, ...] = (
 
 
 def _is_generated_file(path: Path) -> bool:
-    """True for minified/bundled files that pollute the graph with noise."""
+    """True for minified/bundled/generated files that pollute the graph."""
     name = path.name.lower()
-    return name.endswith(_GENERATED_SUFFIXES) or ".min." in name
+    return name.endswith(_GENERATED_SUFFIXES) or ".min." in name or name.endswith(".d.ts")
 
 # Tree-sitter query patterns per language
 _QUERY_TEMPLATES: dict[str, list[tuple[NodeType, str]]] = {
@@ -173,6 +173,24 @@ def _get_parser(lang_name: str) -> Optional[Parser]:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _is_trivial_callback(node: Node) -> bool:
+    """True for short anonymous callbacks passed as call arguments.
+
+    e.g. ``arr.map(x => x.id)``, ``useEffect(() => {}, [])``'s empty body,
+    ``(s) => s.foo`` Zustand selectors. These one/two-liners are ~21% of nodes
+    on a real React codebase and are pure retrieval noise. Substantial callbacks
+    (a multi-line useEffect) and named/assigned arrows (``const f = () =>``) are
+    kept — only short arguments-position anonymous functions are dropped.
+    """
+    if node.type not in ("arrow_function", "function_expression"):
+        return False
+    parent = node.parent
+    if parent is None or parent.type != "arguments":
+        return False
+    span = node.end_point[0] - node.start_point[0]
+    return span <= 2
+
 
 def _decode(node: Node, source_bytes: bytes) -> str:
     return source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
@@ -386,6 +404,8 @@ def parse_file(filepath: Path, root: Path) -> tuple[list[GraphNode], list[GraphE
     templates = _QUERY_TEMPLATES.get(lang_name, [])
     for target_type, ts_type in templates:
         for ts_node in _find_nodes_by_type(tree.root_node, ts_type):
+            if _is_trivial_callback(ts_node):
+                continue  # skip one-liner anonymous callbacks (retrieval noise)
             name = _node_name(ts_node, source_bytes)
             content = _safe_content(source_bytes, ts_node)
             node_id = f"{target_type.value}:{rel_path}:{name}:{ts_node.start_point[0]}"
@@ -424,6 +444,7 @@ def parse_file(filepath: Path, root: Path) -> tuple[list[GraphNode], list[GraphE
     # Fallback: if the file produced no definition nodes (config-like files,
     # JSX-heavy components, or constructs we don't extract), index the file
     # body itself so the file is never invisible to retrieval/scoring.
+    # (Generated stubs like *.d.ts are excluded earlier, at the walk level.)
     if len(nodes) == 1:  # only the file node was added
         body = _safe_content(source_bytes, tree.root_node)
         file_node.content = body
