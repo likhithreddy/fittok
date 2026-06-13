@@ -174,22 +174,26 @@ def _get_parser(lang_name: str) -> Optional[Parser]:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _is_trivial_callback(node: Node) -> bool:
-    """True for short anonymous callbacks passed as call arguments.
+_TRIVIAL_CALLBACK_MAX_TOKENS = 30
 
-    e.g. ``arr.map(x => x.id)``, ``useEffect(() => {}, [])``'s empty body,
-    ``(s) => s.foo`` Zustand selectors. These one/two-liners are ~21% of nodes
-    on a real React codebase and are pure retrieval noise. Substantial callbacks
-    (a multi-line useEffect) and named/assigned arrows (``const f = () =>``) are
-    kept — only short arguments-position anonymous functions are dropped.
+
+def _is_trivial_callback(node: Node, source_bytes: bytes) -> bool:
+    """True for small anonymous callbacks passed as call arguments.
+
+    e.g. ``arr.map(x => x.id)``, ``.catch(() => {})``, ``(s) => s.foo`` Zustand
+    selectors, ``report.answers.map((a, idx) => ({ ...a }))``. These are ~21% of
+    nodes on a real React codebase and are pure retrieval noise. Judged by token
+    count (not line span — trivial callbacks are often wrapped across 3-5 lines).
+    Substantial callbacks (a real multi-line useEffect, >30 tokens) and
+    named/assigned arrows (``const f = () =>``, parent is a declarator) are kept.
     """
     if node.type not in ("arrow_function", "function_expression"):
         return False
     parent = node.parent
     if parent is None or parent.type != "arguments":
         return False
-    span = node.end_point[0] - node.start_point[0]
-    return span <= 2
+    text = source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+    return count_tokens(text) < _TRIVIAL_CALLBACK_MAX_TOKENS
 
 
 def _decode(node: Node, source_bytes: bytes) -> str:
@@ -404,8 +408,8 @@ def parse_file(filepath: Path, root: Path) -> tuple[list[GraphNode], list[GraphE
     templates = _QUERY_TEMPLATES.get(lang_name, [])
     for target_type, ts_type in templates:
         for ts_node in _find_nodes_by_type(tree.root_node, ts_type):
-            if _is_trivial_callback(ts_node):
-                continue  # skip one-liner anonymous callbacks (retrieval noise)
+            if _is_trivial_callback(ts_node, source_bytes):
+                continue  # skip small anonymous callbacks (retrieval noise)
             name = _node_name(ts_node, source_bytes)
             content = _safe_content(source_bytes, ts_node)
             node_id = f"{target_type.value}:{rel_path}:{name}:{ts_node.start_point[0]}"

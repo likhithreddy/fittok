@@ -74,6 +74,10 @@ mcp = FastMCP(
 )
 
 SCRUB_ENABLED = os.environ.get("CONTEXT_OPTIMIZER_SCRUB", "false").lower() in ("true", "1", "yes")
+# When on, the tool asks the model to surface a one-line savings footer to the
+# user. Default off (most users want clean answers, not stats) — turn on for
+# demos / proving the token savings.
+SHOW_SAVINGS = os.environ.get("CONTEXT_OPTIMIZER_SHOW_SAVINGS", "false").lower() in ("true", "1", "yes")
 
 
 def _graph_output_path(resolved: Path) -> str:
@@ -225,6 +229,14 @@ def optimize_context_tool(
         return {"error": f"Query failed: {e}", "graph_stats": graph_stats}
 
     savings = _compute_savings(resolved, files, ctx_stats["tokens_sent"])
+
+    # Optionally instruct the model to surface the savings to the user inline.
+    if SHOW_SAVINGS and savings.get("baseline_full_files_tokens"):
+        readable += (
+            "\n\n---\n[context-optimizer] After answering, append this footer on its "
+            f"own line:\n🪙 context-optimizer saved {savings['reduction_pct']}% "
+            f"({savings['tokens_sent_with_mcp']} vs {savings['baseline_full_files_tokens']} tokens)\n"
+        )
 
     return {
         "optimized_context": readable,
