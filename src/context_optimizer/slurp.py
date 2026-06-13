@@ -302,12 +302,15 @@ def format_subgraph(nodes: list, token_budget: int) -> str:
 
     parts = [f"## Selected Nodes ({tokens_used} / {token_budget} tokens)\n"]
 
-    # Group by file
+    # Group by file, but keep RELEVANCE order: `nodes` arrives ranked by score,
+    # so iterating the grouping dict in insertion order puts the file with the
+    # highest-scoring node first, and the best nodes first within each file.
+    # (Most-relevant code leads, and survives if the output is later truncated.)
     by_file: dict[str, list] = defaultdict(list)
     for n in nodes:
         by_file[n.file].append(n)
 
-    for filepath in sorted(by_file.keys()):
+    for filepath in by_file:  # insertion order = relevance order, not alphabetical
         parts.append(f"\n#### {filepath}\n")
         for node in by_file[filepath]:
             parts.append(_format_node(node))
