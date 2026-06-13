@@ -132,7 +132,7 @@ def create_ui(graph=None):
         return md, html, json.dumps(stats, indent=2)
 
     with gr.Blocks(title="Fittok Visualizer") as app:
-        gr.Markdown("# Fittok Context Optimizer")
+        gr.Markdown("# Fittok Fittok")
 
         with gr.Row():
             with gr.Column(scale=1):

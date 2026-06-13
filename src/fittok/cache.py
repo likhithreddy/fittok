@@ -1,4 +1,4 @@
-"""3-level caching layer for context-optimizer.
+"""3-level caching layer for fittok.
 
 Levels:
   1. Graph cache — keyed by (root_path, file_mtimes_hash)
@@ -19,10 +19,10 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = os.environ.get(
-    "CONTEXT_OPTIMIZER_CACHE_DIR",
+    "FITTOK_CACHE_DIR",
     os.path.expanduser("~/.cache/fittok"),
 )
-MAX_CACHE_SIZE = int(os.environ.get("CONTEXT_OPTIMIZER_CACHE_MAX_MB", "500")) * 1024 * 1024
+MAX_CACHE_SIZE = int(os.environ.get("FITTOK_CACHE_MAX_MB", "500")) * 1024 * 1024
 
 # Stats tracking
 _stats: dict[str, int] = {"graph_hits": 0, "graph_misses": 0,

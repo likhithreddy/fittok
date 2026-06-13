@@ -2,7 +2,7 @@
 
 from unittest.mock import patch, MagicMock
 
-from context_optimizer.server import (
+from fittok.server import (
     optimize_context_batch,
     optimize_context_structured,
     diff_graph_tool,
@@ -27,7 +27,7 @@ def _make_project(tmp_path):
 
 
 class TestMultiQueryBatch:
-    @patch("context_optimizer.llmlingua_wrapper._get_compressor")
+    @patch("fittok.llmlingua_wrapper._get_compressor")
     def test_batch_multiple_queries(self, mock_get, tmp_path):
         mock_compressor = MagicMock()
         mock_compressor.compress_prompt.return_value = {"compressed_prompt": "short"}
@@ -54,7 +54,7 @@ class TestMultiQueryBatch:
 
 
 class TestStructuredOutput:
-    @patch("context_optimizer.llmlingua_wrapper._get_compressor")
+    @patch("fittok.llmlingua_wrapper._get_compressor")
     def test_json_format(self, mock_get, tmp_path):
         mock_compressor = MagicMock()
         mock_compressor.compress_prompt.return_value = {"compressed_prompt": "auth info"}
@@ -71,7 +71,7 @@ class TestStructuredOutput:
         assert "supporting_nodes" in result
         assert "graph_stats" in result
 
-    @patch("context_optimizer.llmlingua_wrapper._get_compressor")
+    @patch("fittok.llmlingua_wrapper._get_compressor")
     def test_markdown_format(self, mock_get, tmp_path):
         mock_compressor = MagicMock()
         mock_compressor.compress_prompt.return_value = {"compressed_prompt": "md output"}
@@ -89,7 +89,7 @@ class TestStructuredOutput:
 
 class TestDiffGraphTool:
     def test_diff_same_graph(self, tmp_path):
-        from context_optimizer.graphify import parse_codebase, save_graph
+        from fittok.graphify import parse_codebase, save_graph
         project = _make_project(tmp_path)
         graph = parse_codebase(project)
         p = str(tmp_path / "graph.json")
@@ -98,8 +98,8 @@ class TestDiffGraphTool:
         assert "No changes detected" in result["summary"]
 
     def test_diff_different_graphs(self, tmp_path):
-        from context_optimizer.graphify import parse_codebase, save_graph
-        from context_optimizer.models import KnowledgeGraph, GraphMetadata
+        from fittok.graphify import parse_codebase, save_graph
+        from fittok.models import KnowledgeGraph, GraphMetadata
 
         project = _make_project(tmp_path)
         graph_a = parse_codebase(project)
@@ -138,13 +138,13 @@ class TestPIIScrubTools:
 
 
 class TestCacheTools:
-    @patch("context_optimizer.cache._get_cache")
+    @patch("fittok.cache._get_cache")
     def test_cache_stats(self, mock_get):
         mock_get.return_value = None
         result = cache_stats_tool()
         assert "available" in result
 
-    @patch("context_optimizer.cache._get_cache")
+    @patch("fittok.cache._get_cache")
     def test_clear_cache(self, mock_get):
         mock_get.return_value = None
         result = clear_cache_tool()
@@ -159,7 +159,7 @@ class TestResetAndStats:
         assert result["total_nodes"] > 0
 
     def test_get_graph_stats(self, tmp_path):
-        from context_optimizer.graphify import parse_codebase, save_graph
+        from fittok.graphify import parse_codebase, save_graph
         project = _make_project(tmp_path)
         graph = parse_codebase(project)
         p = str(tmp_path / "graph.json")

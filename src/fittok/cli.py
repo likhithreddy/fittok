@@ -1,14 +1,14 @@
 """Command-line interface — lets the package do its job WITHOUT an MCP client.
 
 Subcommands:
-    context-optimizer serve              Run the MCP server (stdio) — for AI clients.
-    context-optimizer index <path>       Pre-build graph + embeddings for a repo.
-    context-optimizer query <path> "<q>" Print the most relevant code for a query.
+    fittok serve              Run the MCP server (stdio) — for AI clients.
+    fittok index <path>       Pre-build graph + embeddings for a repo.
+    fittok query <path> "<q>" Print the most relevant code for a query.
 
 `query` is the standalone equivalent of the MCP `optimize_context` tool: it
 returns the same readable, budget-bounded context, straight to your terminal.
 With no subcommand, defaults to `serve` (so existing MCP registrations that
-launch the bare `context-optimizer` command keep working).
+launch the bare `fittok` command keep working).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import sys
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="context-optimizer",
+        prog="fittok",
         description="Retrieve the most relevant source code for a query, within a token budget.",
     )
     sub = parser.add_subparsers(dest="cmd")

@@ -252,13 +252,13 @@ def _node_name(node: Node, source_bytes: bytes) -> str:
     return _decode(node, source_bytes).split("\n")[0][:80]
 
 
-_MAX_CONTENT_CHARS = int(os.environ.get("CONTEXT_OPTIMIZER_MAX_NODE_CHARS", "8000"))
+_MAX_CONTENT_CHARS = int(os.environ.get("FITTOK_MAX_NODE_CHARS", "8000"))
 
 
 def _safe_content(source_bytes: bytes, node: Node, max_chars: int | None = None) -> str:
     """Extract node content, truncated for storage.
 
-    The cap is configurable via CONTEXT_OPTIMIZER_MAX_NODE_CHARS (default 8000,
+    The cap is configurable via FITTOK_MAX_NODE_CHARS (default 8000,
     up from 2000) so large functions aren't gutted before relevance scoring.
     """
     limit = max_chars if max_chars is not None else _MAX_CONTENT_CHARS

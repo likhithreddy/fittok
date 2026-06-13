@@ -7,7 +7,7 @@ functions are re-embedded (embeddings are content-keyed and persisted on disk),
 unchanged code is reused.
 
 Usage:
-    python -m context_optimizer.indexer /path/to/repo
+    python -m fittok.indexer /path/to/repo
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def index_codebase(path: str) -> dict:
 def main() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
     if len(sys.argv) < 2:
-        print("Usage: python -m context_optimizer.indexer <codebase_path>", file=sys.stderr)
+        print("Usage: python -m fittok.indexer <codebase_path>", file=sys.stderr)
         sys.exit(1)
     path = sys.argv[1]
     print(f"Indexing {path} ...")

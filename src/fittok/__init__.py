@@ -1,9 +1,9 @@
-"""Context Optimizer — relevant-code retrieval within a token budget.
+"""Fittok — relevant-code retrieval within a token budget.
 
 Usable three ways, each standalone:
-  - As a library:   ``from context_optimizer import optimize``
-  - As a CLI:       ``context-optimizer query <path> "<question>"``
-  - As an MCP server: ``python -m context_optimizer`` (for AI clients)
+  - As a library:   ``from fittok import optimize``
+  - As a CLI:       ``fittok query <path> "<question>"``
+  - As an MCP server: ``python -m fittok`` (for AI clients)
 """
 
 __version__ = "0.3.0"

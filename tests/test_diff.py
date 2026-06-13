@@ -1,10 +1,10 @@
 """Tests for graph diffing."""
 
-from context_optimizer.models import (
+from fittok.models import (
     KnowledgeGraph, GraphNode, GraphEdge, GraphMetadata,
     NodeType, EdgeType,
 )
-from context_optimizer.diff import diff_graphs
+from fittok.diff import diff_graphs
 
 
 def _make_graph(nodes, edges, root="/test"):

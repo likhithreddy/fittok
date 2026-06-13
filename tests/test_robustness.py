@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from context_optimizer import embeddings
-from context_optimizer.graphify import parse_codebase
-from context_optimizer.models import NodeType
-from context_optimizer.slurp import query_graph
+from fittok import embeddings
+from fittok.graphify import parse_codebase
+from fittok.models import NodeType
+from fittok.slurp import query_graph
 
 
 def _write(d: Path, name: str, content: str) -> None:

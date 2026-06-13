@@ -62,7 +62,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
-    "context-optimizer",
+    "fittok",
     instructions=(
         "Retrieves the most relevant REAL source code for a question about a "
         "codebase, within a token budget. Prefer `optimize_context` for "
@@ -73,11 +73,11 @@ mcp = FastMCP(
     ),
 )
 
-SCRUB_ENABLED = os.environ.get("CONTEXT_OPTIMIZER_SCRUB", "false").lower() in ("true", "1", "yes")
+SCRUB_ENABLED = os.environ.get("FITTOK_SCRUB", "false").lower() in ("true", "1", "yes")
 # When on, the tool asks the model to surface a one-line savings footer to the
 # user. Default off (most users want clean answers, not stats) — turn on for
 # demos / proving the token savings.
-SHOW_SAVINGS = os.environ.get("CONTEXT_OPTIMIZER_SHOW_SAVINGS", "false").lower() in ("true", "1", "yes")
+SHOW_SAVINGS = os.environ.get("FITTOK_SHOW_SAVINGS", "false").lower() in ("true", "1", "yes")
 
 
 def _graph_output_path(resolved: Path) -> str:
@@ -233,8 +233,8 @@ def optimize_context_tool(
     # Optionally instruct the model to surface the savings to the user inline.
     if SHOW_SAVINGS and savings.get("baseline_full_files_tokens"):
         readable += (
-            "\n\n---\n[context-optimizer] After answering, append this footer on its "
-            f"own line:\n🪙 context-optimizer saved {savings['reduction_pct']}% "
+            "\n\n---\n[fittok] After answering, append this footer on its "
+            f"own line:\n🪙 fittok saved {savings['reduction_pct']}% "
             f"({savings['tokens_sent_with_mcp']} vs {savings['baseline_full_files_tokens']} tokens)\n"
         )
 
@@ -707,7 +707,7 @@ def launch_ui_tool(port: int = 8765, open_browser: bool = True) -> dict:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    """Entry point for `python -m context_optimizer`."""
+    """Entry point for `python -m fittok`."""
     mcp.run(transport="stdio")
 
 

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from context_optimizer.graphify import parse_codebase, save_graph, load_graph
-from context_optimizer.models import KnowledgeGraph, NodeType, EdgeType
+from fittok.graphify import parse_codebase, save_graph, load_graph
+from fittok.models import KnowledgeGraph, NodeType, EdgeType
 
 
 @pytest.fixture

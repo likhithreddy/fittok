@@ -6,7 +6,7 @@ PyPI token.
 
 ## 1. Verify version
 Bump `version` in `pyproject.toml` **and** `__version__` in
-`src/context_optimizer/__init__.py` (keep them in sync). Current: `0.3.0`.
+`src/fittok/__init__.py` (keep them in sync). Current: `0.3.0`.
 
 ## 2. Build
 ```bash
@@ -21,7 +21,7 @@ python -m twine check dist/*
 python -m twine upload --repository testpypi dist/*
 # then in a clean venv:
 pip install -i https://test.pypi.org/simple/ \
-  --extra-index-url https://pypi.org/simple context-optimizer
+  --extra-index-url https://pypi.org/simple fittok
 ```
 
 ## 4. Upload to PyPI
@@ -33,16 +33,16 @@ python -m twine upload dist/*
 
 ## 5. After publish — how users consume it
 ```bash
-pip install context-optimizer          # core (retrieval + embeddings)
-pip install "context-optimizer[ui]"    # + Gradio/pyvis graph visualizer
+pip install fittok          # core (retrieval + embeddings)
+pip install "fittok[ui]"    # + Gradio/pyvis graph visualizer
 ```
 Register the MCP server (user scope, available in every repo):
 ```bash
-claude mcp add context-optimizer --scope user -- python -m context_optimizer
+claude mcp add fittok --scope user -- python -m fittok
 ```
 Optional pre-warm so the first query is instant:
 ```bash
-context-optimizer-index /path/to/repo
+fittok-index /path/to/repo
 ```
 
 ## Notes / gotchas baked into the package

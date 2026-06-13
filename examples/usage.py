@@ -1,4 +1,4 @@
-"""Usage example for context-optimizer.
+"""Usage example for fittok.
 
 Demonstrates all three approaches:
   1. Step-by-step pipeline
@@ -88,9 +88,9 @@ def demo_step_by_step(project_path: str):
     print("Step-by-step Pipeline Demo")
     print("=" * 60)
 
-    from context_optimizer.graphify import parse_codebase, save_graph
-    from context_optimizer.slurp import query_graph
-    from context_optimizer.llmlingua_wrapper import compress_context
+    from fittok.graphify import parse_codebase, save_graph
+    from fittok.slurp import query_graph
+    from fittok.llmlingua_wrapper import compress_context
 
     # Step 1: Parse
     print("\n1. Parsing codebase...")
@@ -120,7 +120,7 @@ def demo_one_call(project_path: str):
     print("One-call Pipeline Demo")
     print("=" * 60)
 
-    from context_optimizer.server import optimize_context_tool
+    from fittok.server import optimize_context_tool
 
     result = optimize_context_tool(
         codebase_path=project_path,
@@ -148,7 +148,7 @@ def main():
 
         if len(sys.argv) > 1 and sys.argv[1] == "server":
             print("Starting MCP server on stdio...")
-            from context_optimizer.server import main as server_main
+            from fittok.server import main as server_main
             server_main()
         else:
             demo_step_by_step(project_path)

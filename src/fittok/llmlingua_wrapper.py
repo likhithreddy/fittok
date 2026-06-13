@@ -2,9 +2,9 @@
 
 Supports CPU and GPU (CUDA) modes, configurable via:
   - Environment variables:
-      CONTEXT_OPTIMIZER_MODEL — CPU model name
-      CONTEXT_OPTIMIZER_MODEL_GPU — GPU model name
-      CONTEXT_OPTIMIZER_DEVICE — "auto" | "cuda" | "cpu"
+      FITTOK_MODEL — CPU model name
+      FITTOK_MODEL_GPU — GPU model name
+      FITTOK_DEVICE — "auto" | "cuda" | "cpu"
   - Function parameters on compress_context()
 """
 
@@ -46,7 +46,7 @@ def _has_mps() -> bool:
 
 def _resolve_device(device: str | None = None) -> str:
     """Resolve the target device, preferring CUDA, then MPS, then CPU."""
-    dev = device or os.environ.get("CONTEXT_OPTIMIZER_DEVICE", "auto")
+    dev = device or os.environ.get("FITTOK_DEVICE", "auto")
     if dev == "auto":
         if _has_cuda():
             return "cuda"
@@ -66,8 +66,8 @@ def _resolve_model(device: str, model_name: str | None = None) -> str:
     if model_name:
         return model_name
     if device == "cuda":
-        return os.environ.get("CONTEXT_OPTIMIZER_MODEL_GPU", DEFAULT_GPU_MODEL)
-    return os.environ.get("CONTEXT_OPTIMIZER_MODEL", DEFAULT_MODEL)
+        return os.environ.get("FITTOK_MODEL_GPU", DEFAULT_GPU_MODEL)
+    return os.environ.get("FITTOK_MODEL", DEFAULT_MODEL)
 
 
 def _get_compressor(model_name: str | None = None, device: str | None = None) -> object:

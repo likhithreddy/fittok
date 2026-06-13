@@ -1,4 +1,4 @@
-# Context Optimizer
+# Fittok
 
 A standalone MCP server that filters and compresses context before it reaches the LLM, reducing token consumption by 80–90%.
 
@@ -9,7 +9,7 @@ A standalone MCP server that filters and compresses context before it reaches th
         │
         ▼
 ┌──────────────────────────────────────┐
-│     MCP Server: context-optimizer    │
+│     MCP Server: fittok    │
 │                                      │
 │  ┌──────────┐                        │
 │  │ Graphify │ → parse code into      │
@@ -67,15 +67,15 @@ LLMLingua defaults to `microsoft/llmlingua-2-bert-base-multilingual-cased-meetin
 Override via environment variable:
 
 ```bash
-export CONTEXT_OPTIMIZER_MODEL="microsoft/phi-2"  # GPU recommended
-export CONTEXT_OPTIMIZER_DEVICE=auto  # auto | cuda | cpu
-python -m context_optimizer
+export FITTOK_MODEL="microsoft/phi-2"  # GPU recommended
+export FITTOK_DEVICE=auto  # auto | cuda | cpu
+python -m fittok
 ```
 
 Or programmatically:
 
 ```python
-from context_optimizer.llmlingua_wrapper import compress_context
+from fittok.llmlingua_wrapper import compress_context
 result = compress_context(text, "question", target_tokens=500, model="microsoft/phi-2")
 ```
 
@@ -83,12 +83,12 @@ result = compress_context(text, "question", target_tokens=500, model="microsoft/
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CONTEXT_OPTIMIZER_MODEL` | bert-base-multilingual | CPU model name |
-| `CONTEXT_OPTIMIZER_MODEL_GPU` | bert-base-multilingual | GPU model name |
-| `CONTEXT_OPTIMIZER_DEVICE` | auto | Device: auto, cuda, cpu |
-| `CONTEXT_OPTIMIZER_SCRUB` | false | Enable PII scrubbing in pipeline |
-| `CONTEXT_OPTIMIZER_CACHE_DIR` | ~/.cache/fittok | Cache directory |
-| `CONTEXT_OPTIMIZER_CACHE_MAX_MB` | 500 | Max cache size in MB |
+| `FITTOK_MODEL` | bert-base-multilingual | CPU model name |
+| `FITTOK_MODEL_GPU` | bert-base-multilingual | GPU model name |
+| `FITTOK_DEVICE` | auto | Device: auto, cuda, cpu |
+| `FITTOK_SCRUB` | false | Enable PII scrubbing in pipeline |
+| `FITTOK_CACHE_DIR` | ~/.cache/fittok | Cache directory |
+| `FITTOK_CACHE_MAX_MB` | 500 | Max cache size in MB |
 
 ## Usage
 
@@ -97,9 +97,9 @@ result = compress_context(text, "question", target_tokens=500, model="microsoft/
 ```json
 {
   "mcpServers": {
-    "context-optimizer": {
+    "fittok": {
       "command": "python",
-      "args": ["-m", "context_optimizer"]
+      "args": ["-m", "fittok"]
     }
   }
 }
@@ -108,15 +108,15 @@ result = compress_context(text, "question", target_tokens=500, model="microsoft/
 Or run standalone:
 
 ```bash
-python -m context_optimizer
+python -m fittok
 ```
 
 ### As a Python Library
 
 ```python
-from context_optimizer.graphify import parse_codebase, save_graph
-from context_optimizer.slurp import query_graph
-from context_optimizer.llmlingua_wrapper import compress_context
+from fittok.graphify import parse_codebase, save_graph
+from fittok.slurp import query_graph
+from fittok.llmlingua_wrapper import compress_context
 
 # Step 1: Parse codebase
 graph = parse_codebase("/path/to/code")
@@ -133,7 +133,7 @@ print(result["compressed"])
 ### One-call Pipeline
 
 ```python
-from context_optimizer.server import optimize_context_tool
+from fittok.server import optimize_context_tool
 
 result = optimize_context_tool(
     codebase_path="/path/to/code",
@@ -146,7 +146,7 @@ print(result["optimized_context"])
 ### Multi-Query Batching
 
 ```python
-from context_optimizer.server import optimize_context_batch
+from fittok.server import optimize_context_batch
 
 result = optimize_context_batch(
     codebase_path="/path/to/code",
@@ -160,7 +160,7 @@ for r in result["results"]:
 ### PII Scrubbing
 
 ```python
-from context_optimizer.pii_scrubber import scrub_text
+from fittok.pii_scrubber import scrub_text
 
 result = scrub_text("Contact admin@company.com with key AKIAIOSFODNN7EXAMPLE")
 print(result["scrubbed"])
@@ -211,9 +211,9 @@ pytest tests/ -v
 ## Architecture
 
 ```
-context-optimizer/
+fittok/
 ├── pyproject.toml
-├── src/context_optimizer/
+├── src/fittok/
 │   ├── __init__.py
 │   ├── server.py              # MCP server (FastMCP)
 │   ├── graphify.py            # Code → knowledge graph

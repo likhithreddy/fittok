@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from context_optimizer.pii_scrubber import (
+from fittok.pii_scrubber import (
     scrub_text,
     scrub_file,
     list_pii_patterns,

@@ -17,7 +17,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = os.environ.get(
-    "CONTEXT_OPTIMIZER_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+    "FITTOK_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
 )
 
 _model = None

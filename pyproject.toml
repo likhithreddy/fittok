@@ -3,13 +3,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "context-optimizer"
+name = "fittok"
 version = "0.3.0"
 description = "MCP server that retrieves the most relevant source code for a query, within a token budget"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Context Optimizer Contributors" }]
+authors = [{ name = "Fittok Contributors" }]
 keywords = ["mcp", "llm", "context", "code-analysis", "retrieval", "embeddings"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -68,11 +68,11 @@ Repository = "https://github.com/siliconagent-ai/fittok-mcp"
 Issues = "https://github.com/siliconagent-ai/fittok-mcp/issues"
 
 [project.scripts]
-context-optimizer = "context_optimizer.cli:main"
-context-optimizer-index = "context_optimizer.indexer:main"
+fittok = "fittok.cli:main"
+fittok-index = "fittok.indexer:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/context_optimizer"]
+packages = ["src/fittok"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

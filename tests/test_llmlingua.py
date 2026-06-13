@@ -2,7 +2,7 @@
 
 from unittest.mock import patch, MagicMock
 
-from context_optimizer.llmlingua_wrapper import compress_context
+from fittok.llmlingua_wrapper import compress_context
 
 
 class TestCompressContext:
@@ -18,7 +18,7 @@ class TestCompressContext:
         assert result["compressed"] == text
         assert result["compression_ratio"] == 1.0
 
-    @patch("context_optimizer.llmlingua_wrapper._get_compressor")
+    @patch("fittok.llmlingua_wrapper._get_compressor")
     def test_compression_with_mock(self, mock_get):
         mock_compressor = MagicMock()
         mock_compressor.compress_prompt.return_value = {
@@ -33,7 +33,7 @@ class TestCompressContext:
         assert result["original_tokens"] > 50
         assert mock_compressor.compress_prompt.called
 
-    @patch("context_optimizer.llmlingua_wrapper._get_compressor")
+    @patch("fittok.llmlingua_wrapper._get_compressor")
     def test_compression_list_result(self, mock_get):
         """LLMLingua may return a list of strings."""
         mock_compressor = MagicMock()
@@ -47,7 +47,7 @@ class TestCompressContext:
 
         assert result["compressed"] == "part one part two"
 
-    @patch("context_optimizer.llmlingua_wrapper._get_compressor")
+    @patch("fittok.llmlingua_wrapper._get_compressor")
     def test_compression_failure_fallback(self, mock_get):
         """Should fall back to truncation on failure."""
         mock_compressor = MagicMock()
@@ -60,7 +60,7 @@ class TestCompressContext:
         assert len(result["compressed"]) > 0
         assert result["compressed_tokens"] > 0
 
-    @patch("context_optimizer.llmlingua_wrapper._get_compressor")
+    @patch("fittok.llmlingua_wrapper._get_compressor")
     def test_rate_override(self, mock_get):
         """When rate is provided, it should be used instead of computing from target_tokens."""
         mock_compressor = MagicMock()
@@ -74,7 +74,7 @@ class TestCompressContext:
         call_kwargs = mock_compressor.compress_prompt.call_args
         assert call_kwargs[1]["rate"] == 0.5
 
-    @patch("context_optimizer.llmlingua_wrapper._get_compressor")
+    @patch("fittok.llmlingua_wrapper._get_compressor")
     def test_model_param_forwarded(self, mock_get):
         """Model parameter should be forwarded to _get_compressor."""
         mock_compressor = MagicMock()

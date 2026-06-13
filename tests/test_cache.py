@@ -2,7 +2,7 @@
 
 from unittest.mock import patch, MagicMock
 
-from context_optimizer.cache import (
+from fittok.cache import (
     _hash_str,
     cache_stats,
     clear_cache,
@@ -21,14 +21,14 @@ class TestHashStr:
 
 
 class TestCacheStats:
-    @patch("context_optimizer.cache._get_cache")
+    @patch("fittok.cache._get_cache")
     def test_stats_no_cache(self, mock_get):
         mock_get.return_value = None
         stats = cache_stats()
         assert stats["available"] is False
         assert "stats" in stats
 
-    @patch("context_optimizer.cache._get_cache")
+    @patch("fittok.cache._get_cache")
     def test_stats_with_cache(self, mock_get):
         mock_cache = MagicMock()
         mock_cache.__len__ = lambda self_inner: 5
@@ -39,7 +39,7 @@ class TestCacheStats:
 
 
 class TestClearCache:
-    @patch("context_optimizer.cache._get_cache")
+    @patch("fittok.cache._get_cache")
     def test_clear_no_cache(self, mock_get):
         mock_get.return_value = None
         result = clear_cache()

@@ -2,7 +2,7 @@
 
 import pytest
 
-from context_optimizer.models import (
+from fittok.models import (
     KnowledgeGraph,
     GraphNode,
     GraphEdge,
@@ -10,7 +10,7 @@ from context_optimizer.models import (
     NodeType,
     EdgeType,
 )
-from context_optimizer.slurp import (
+from fittok.slurp import (
     count_tokens,
     pagerank,
     tfidf_scores,

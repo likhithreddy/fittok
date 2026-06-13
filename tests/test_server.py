@@ -2,7 +2,7 @@
 
 from unittest.mock import patch, MagicMock
 
-from context_optimizer.server import (
+from fittok.server import (
     parse_codebase_tool,
     query_graph_tool,
     compress_context_tool,
@@ -15,7 +15,7 @@ def _make_sample_graph(tmp_path):
     (tmp_path / "app.py").write_text(
         "def hello():\n    return 'hello'\n\ndef world():\n    return hello() + ' world'\n"
     )
-    from context_optimizer.graphify import parse_codebase, save_graph
+    from fittok.graphify import parse_codebase, save_graph
 
     graph = parse_codebase(str(tmp_path))
     path = save_graph(graph, str(tmp_path / "graph.json"))
@@ -49,7 +49,7 @@ class TestQueryGraphTool:
 
 
 class TestCompressContextTool:
-    @patch("context_optimizer.llmlingua_wrapper._get_compressor")
+    @patch("fittok.llmlingua_wrapper._get_compressor")
     def test_compress_success(self, mock_get):
         mock_compressor = MagicMock()
         mock_compressor.compress_prompt.return_value = {
@@ -71,7 +71,7 @@ class TestOptimizeContextTool:
             "def greet(name):\n    return f'Hello {name}'\n"
         )
 
-        with patch("context_optimizer.llmlingua_wrapper._get_compressor") as mock_get:
+        with patch("fittok.llmlingua_wrapper._get_compressor") as mock_get:
             mock_compressor = MagicMock()
             mock_compressor.compress_prompt.return_value = {
                 "compressed_prompt": "greet function"
