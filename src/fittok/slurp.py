@@ -187,21 +187,25 @@ def _select_nodes(
     edges: list,
     scores: dict[str, float],
     token_budget: int,
+    eligible_ids: set | None = None,
 ) -> list:
-    """3-phase greedy selection: pick → accumulate boosts → fill.
+    """Greedy selection by combined score, capped by *both* the token budget and
+    an *eligibility set* (the relevance cliff).
 
-    Phase 1: Greedy selection by score, accumulating adjacency boosts
-             without re-sorting. O(n log n) for the initial sort.
-    Phase 2: Apply all accumulated boosts to remaining nodes, sort once.
-    Phase 3: Fill remaining budget from boosted rankings.
-
-    Overall: O(n log n + n×d) where d = avg neighbor degree.
+    eligible_ids is the key anti-over-selection guard: only those nodes can be
+    selected, so we stop at the genuinely-relevant cluster instead of padding the
+    budget with weakly-related noise. Ranking still uses the combined score;
+    eligibility is gated on raw semantic relevance (computed by the caller).
     """
     node_map = {n.id: n for n in nodes}
     adj = _build_adjacency(nodes, edges)
 
-    # Phase 1: Initial greedy pass — select high-scoring nodes, collect boosts
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    # Only eligible nodes (above the relevance cliff) are ever selectable.
+    if eligible_ids is None:
+        eligible = dict(scores)
+    else:
+        eligible = {nid: s for nid, s in scores.items() if nid in eligible_ids}
+    ranked = sorted(eligible.items(), key=lambda x: x[1], reverse=True)
 
     selected_ids: set[str] = set()
     selected_nodes: list = []
@@ -216,42 +220,28 @@ def _select_nodes(
         node = node_map.get(nid)
         if node is None:
             continue
-
         node_tokens = count_tokens(node.content) if node.content else count_tokens(node.name) + 10
         if tokens_used + node_tokens > token_budget:
             continue
-
         selected_ids.add(nid)
         selected_nodes.append(node)
         tokens_used += node_tokens
-
-        # Accumulate boosts for neighbors (don't apply yet)
         for neighbor_id in adj.get(nid, set()):
             if neighbor_id not in selected_ids:
                 boost_accumulator[neighbor_id] += NEIGHBOR_DECAY * score
 
-    # Phase 2: Apply accumulated boosts, re-sort once
-    boosted_scores = dict(scores)
-    for nid, boost in boost_accumulator.items():
-        if nid not in selected_ids:
-            boosted_scores[nid] = boosted_scores.get(nid, 0) + boost
-
-    ranked_boosted = sorted(boosted_scores.items(), key=lambda x: x[1], reverse=True)
-
-    # Phase 3: Fill remaining budget with boosted nodes
-    for nid, _score in ranked_boosted:
+    # Re-order remaining ELIGIBLE nodes by boosted score, fill leftover budget.
+    boosted = {nid: eligible[nid] + boost_accumulator.get(nid, 0.0)
+               for nid in eligible if nid not in selected_ids}
+    for nid, _s in sorted(boosted.items(), key=lambda x: x[1], reverse=True):
         if tokens_used >= token_budget:
             break
-        if nid in selected_ids:
-            continue
         node = node_map.get(nid)
         if node is None:
             continue
-
         node_tokens = count_tokens(node.content) if node.content else count_tokens(node.name) + 10
         if tokens_used + node_tokens > token_budget:
             continue
-
         selected_ids.add(nid)
         selected_nodes.append(node)
         tokens_used += node_tokens
@@ -273,47 +263,55 @@ _LANG_FROM_EXT = {
 }
 
 
-def _format_node(node) -> str:
-    """Format a single graph node as markdown."""
+# The top-ranked nodes are returned in full; the rest as signature-only context.
+FULL_DETAIL_NODES = 6
+
+
+def _node_signature(content: str) -> str:
+    """First meaningful line of a node — its declaration — for supporting context."""
+    for line in (content or "").splitlines():
+        if line.strip():
+            return line.strip()[:160]
+    return ""
+
+
+def _format_node(node, full: bool) -> str:
+    """Format a node as markdown. *full* → whole body; else signature-only."""
     import os
     _, ext = os.path.splitext(node.file)
     lang = _LANG_FROM_EXT.get(ext, "")
 
-    header = f"### {node.name} ({node.file}:{node.line_start}-{node.line_end})"
     if node.type.value in ("function", "method"):
         header = f"### {node.name}() ({node.file}:{node.line_start}-{node.line_end})"
     elif node.type.value == "class":
         header = f"### class {node.name} ({node.file}:{node.line_start}-{node.line_end})"
-
-    if node.content:
-        code_block = f"```{lang}\n{node.content}\n```"
     else:
-        code_block = f"*({node.type.value} — no content stored)*"
+        header = f"### {node.name} ({node.file}:{node.line_start}-{node.line_end})"
 
-    return f"{header}\n\n{code_block}"
+    if not node.content:
+        body = f"*({node.type.value} — no content stored)*"
+    elif full:
+        body = f"```{lang}\n{node.content}\n```"
+    else:
+        # Supporting node: declaration only, so the model knows it exists + where.
+        body = f"```{lang}\n{_node_signature(node.content)}  // …\n```"
+    return f"{header}\n\n{body}"
 
 
 def format_subgraph(nodes: list, token_budget: int) -> str:
-    """Format selected nodes into a markdown document."""
-    tokens_used = sum(
-        count_tokens(n.content) if n.content else count_tokens(n.name) + 10
-        for n in nodes
-    )
+    """Format selected nodes into markdown, full detail for the top nodes and
+    signature-only for the supporting tail (keeps the slice small + readable)."""
+    full_ids = {n.id for n in nodes[:FULL_DETAIL_NODES]}
 
-    parts = [f"## Selected Nodes ({tokens_used} / {token_budget} tokens)\n"]
-
-    # Group by file, but keep RELEVANCE order: `nodes` arrives ranked by score,
-    # so iterating the grouping dict in insertion order puts the file with the
-    # highest-scoring node first, and the best nodes first within each file.
-    # (Most-relevant code leads, and survives if the output is later truncated.)
     by_file: dict[str, list] = defaultdict(list)
     for n in nodes:
         by_file[n.file].append(n)
 
+    parts: list[str] = ["## Relevant code\n"]
     for filepath in by_file:  # insertion order = relevance order, not alphabetical
         parts.append(f"\n#### {filepath}\n")
         for node in by_file[filepath]:
-            parts.append(_format_node(node))
+            parts.append(_format_node(node, full=node.id in full_ids))
             parts.append("")
 
     return "\n".join(parts)
@@ -331,46 +329,40 @@ SEMANTIC_CONFIDENCE_THRESHOLD = 0.15
 # much is actually relevant (sum of clearly-relevant nodes' tokens), clamped to
 # this range. A hard MAX also caps explicit budgets so a stray huge value (e.g.
 # the model passing 64000) can't blow up context.
-ADAPTIVE_MIN = 1200
+ADAPTIVE_MIN = 600    # a 1-2 function answer should be able to come back this small
 ADAPTIVE_MAX = 3500   # keep each response small so even several calls stay bounded
 MAX_BUDGET = 4000     # (Claude Code spills >~10k tool results to disk → re-reads)
-ADAPTIVE_ABS_THRESHOLD = 0.28   # raw cosine: nodes this similar count as "clearly relevant"
-ADAPTIVE_REL_FRACTION = 0.6     # lexical fallback: fraction of top score
+# Relevance cliff on the RAW SEMANTIC cosine (the signal that actually
+# discriminates relevant from noise — unlike the combined score, which has a
+# floor from the near-uniform PageRank on a flat graph). A node is eligible if
+# its cosine is within REL_FRACTION of the top cosine AND above ABS_FLOOR.
+REL_FRACTION = 0.6
+ABS_FLOOR = 0.22
 
 
-def _resolve_budget(token_budget: int, nodes: list, scores: dict[str, float],
-                    relevance: dict[str, float] | None = None) -> int:
+def _eligible_ids(relevance: dict[str, float]) -> set:
+    """Set of node ids above the relevance cliff (raw semantic cosine)."""
+    if not relevance:
+        return set()
+    top = max(relevance.values())
+    cliff = max(REL_FRACTION * top, ABS_FLOOR)
+    return {nid for nid, s in relevance.items() if s >= cliff}
+
+
+def _resolve_budget(token_budget: int, nodes: list, eligible_ids: set) -> int:
     """Compute the effective token budget.
 
     token_budget > 0 → honor it, capped at MAX_BUDGET.
-    token_budget <= 0 → adaptive: sum the tokens of *clearly-relevant* nodes,
-    clamped to [MIN, MAX]. When raw semantic similarities are available, relevance
-    is judged on an absolute cosine threshold (so a narrow question with few
-    strong matches yields a small budget); otherwise a relative cliff on the
-    normalized lexical scores.
+    token_budget <= 0 → adaptive: exactly the tokens of the eligible (above-cliff)
+    nodes, clamped to [MIN, MAX]. The cliff already excludes the weakly-related
+    tail, so the budget self-sizes to the relevant cluster without padding.
     """
     if token_budget > 0:
         return min(token_budget, MAX_BUDGET)
-
-    use_abs = relevance is not None and len(relevance) > 0
-    src = relevance if use_abs else scores
-    if not src:
-        return ADAPTIVE_MIN
-    if use_abs:
-        threshold = ADAPTIVE_ABS_THRESHOLD
-    else:
-        top = max(src.values())
-        if top <= 0:
-            return ADAPTIVE_MIN
-        threshold = ADAPTIVE_REL_FRACTION * top
-
-    node_by_id = {n.id: n for n in nodes}
     total = 0
-    for nid, s in src.items():
-        if s >= threshold:
-            n = node_by_id.get(nid)
-            if n is not None:
-                total += count_tokens(n.content) if n.content else count_tokens(n.name) + 10
+    for n in nodes:
+        if n.id in eligible_ids:
+            total += count_tokens(n.content) if n.content else count_tokens(n.name) + 10
     return max(ADAPTIVE_MIN, min(total, ADAPTIVE_MAX))
 
 
@@ -444,11 +436,22 @@ def query_graph(
         low_conf = confidence < 0.05
     confidence_label = "low" if low_conf else ("high" if confidence >= 0.5 else "medium")
 
-    # Resolve the effective budget (adaptive when token_budget <= 0). Use raw
-    # semantic similarities for an absolute relevance judgment when available.
-    effective_budget = _resolve_budget(token_budget, content_nodes, scores, relevance=semantic)
+    # Eligibility cliff on raw semantic relevance (falls back to combined scores
+    # when embeddings are unavailable). Drives BOTH the adaptive budget and what
+    # can be selected, so only the genuinely-relevant cluster is returned.
+    eligible_ids = _eligible_ids(semantic if semantic else scores)
+    # Exclude test files from eligibility (raw cosine doesn't see the test
+    # penalty) unless the query is itself about tests — keep them only if that
+    # would otherwise leave nothing.
+    if "test" not in query.lower() and "spec" not in query.lower():
+        file_by_id = {n.id: n.file for n in content_nodes}
+        non_test = {nid for nid in eligible_ids if not _is_test_file(file_by_id.get(nid, ""))}
+        if non_test:
+            eligible_ids = non_test
+    effective_budget = _resolve_budget(token_budget, content_nodes, eligible_ids)
 
-    selected = _select_nodes(content_nodes, graph.edges, scores, effective_budget)
+    selected = _select_nodes(content_nodes, graph.edges, scores, effective_budget,
+                             eligible_ids=eligible_ids)
 
     if not selected:
         md = "## No relevant nodes found\nTry broadening your query."

@@ -160,7 +160,7 @@ class TestFormatSubgraph:
     def test_format_output(self, sample_graph):
         content_nodes = [n for n in sample_graph.nodes if n.content]
         md = format_subgraph(content_nodes, 4000)
-        assert "Selected Nodes" in md
+        assert "Relevant code" in md
         assert "login" in md
         assert "```" in md
 
