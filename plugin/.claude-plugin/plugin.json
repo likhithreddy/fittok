@@ -1,0 +1,14 @@
+{
+  "name": "fittok",
+  "description": "Token-optimized codebase context. Retrieves only the relevant source code for a question instead of reading whole files. Bundles the fittok MCP server (model-invoked) and a UserPromptSubmit hook that auto-injects the relevant context (deterministic).",
+  "version": "0.3.0",
+  "author": { "name": "siliconagent-ai" },
+  "homepage": "https://github.com/likhithreddy/fittok",
+  "mcpServers": {
+    "fittok": {
+      "command": "uvx",
+      "args": ["fittok"]
+    }
+  },
+  "hooks": "./hooks/hooks.json"
+}
