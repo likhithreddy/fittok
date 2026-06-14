@@ -320,8 +320,8 @@ def _compute_savings(root: Path, rel_files: list[str], tokens_sent: int) -> dict
         "tokens_saved": saved,
         "reduction_pct": pct,
         "summary": (
-            f"Sent {tokens_sent} tokens instead of {baseline} "
-            f"({pct}% reduction across {counted} file(s))"
+            f"Sent {tokens_sent} tokens vs ~{baseline} to read the {counted} "
+            f"relevant file(s) in full ({pct}% less)"
             if baseline else "No baseline files available to compare."
         ),
     }
