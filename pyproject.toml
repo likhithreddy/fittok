@@ -63,9 +63,9 @@ ui = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/siliconagent-ai/fittok-mcp"
-Repository = "https://github.com/siliconagent-ai/fittok-mcp"
-Issues = "https://github.com/siliconagent-ai/fittok-mcp/issues"
+Homepage = "https://github.com/likhithreddy/fittok"
+Repository = "https://github.com/likhithreddy/fittok"
+Issues = "https://github.com/likhithreddy/fittok/issues"
 
 [project.scripts]
 fittok = "fittok.cli:main"

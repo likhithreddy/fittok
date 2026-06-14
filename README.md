@@ -1,246 +1,102 @@
-# Fittok
+# fittok
 
-A standalone MCP server that filters and compresses context before it reaches the LLM, reducing token consumption by 80–90%.
+**Retrieve only the relevant source code for a question — instead of the model
+reading whole files — so an LLM answers codebase questions on a small, focused
+slice of context.** Less input = fewer tokens, lower cost, faster answers.
 
-## How It Works
+Works three ways from one install: an **MCP server**, a **CLI**, and a **Python
+library** — plus a **Claude Code plugin** that injects context automatically.
+
+---
+
+## How it works
 
 ```
-[User Query + Files]
-        │
-        ▼
-┌──────────────────────────────────────┐
-│     MCP Server: fittok    │
-│                                      │
-│  ┌──────────┐                        │
-│  │ Graphify │ → parse code into      │
-│  └────┬─────┘   knowledge graph      │
-│       │                               │
-│  ┌────▼─────┐                        │
-│  │  slurp   │ → select relevant      │
-│  └────┬─────┘   subgraph (budget)    │
-│       │                               │
-│  ┌────▼──────┐                       │
-│  │LLMLingua │ → compress to target   │
-│  └──────────┘   token count          │
-└──────────────────────────────────────┘
-        │
-        ▼
-[Compressed Context] → Send to LLM
+codebase ──▶ graphify ──▶ slurp ──▶ readable slice ──▶ LLM answers
+             (parse)      (select)   (trim to budget)
 ```
 
-## What's New in v0.2.0
+1. **graphify** — parses the repo with tree-sitter into a knowledge graph of
+   functions / classes / methods (Python, JS, JSX, TS, TSX, Java, Go, Rust).
+2. **slurp** — scores every node against the question with **semantic embeddings
+   + TF-IDF + PageRank**, then selects *only* the genuinely relevant nodes via a
+   relevance cliff (no budget-padding with noise).
+3. **readable output** — returns the **actual source code** of those nodes,
+   top-ranked in full and the supporting tail as signatures, trimmed to a budget.
+   The model answers directly from it.
 
-| Feature | Description |
-|---------|-------------|
-| **Streaming Output** | Stage-by-stage progress events via `optimize_context_stream` |
-| **Watch Mode** | Incremental graph updates with file watcher (`watch_start` / `watch_stop`) |
-| **Batch Boosting** | O(n log n) neighbor selection in slurp (3-phase approach) |
-| **Chunked Parsing** | Batch file parsing with progress events for large codebases |
-| **GPU Acceleration** | CUDA support with auto-detection for LLMLingua compression |
-| **3-Level Cache** | Persistent graph/query/compression cache via diskcache |
-| **Web UI** | Interactive graph visualization with Gradio + pyvis |
-| **Graph Diffing** | Compare two graphs to see structural changes |
-| **Multi-Query** | One parse, many queries with `optimize_context_batch` |
-| **PII Scrubbing** | Detect and redact secrets, API keys, emails before processing |
-| **Structured Output** | JSON output mode with supporting nodes and relevance scores |
+> Note: an earlier design compressed the slice with LLMLingua, but that produced
+> unreadable token-salad the model ignored (then re-read the files). fittok
+> returns **real, readable code** instead. LLMLingua remains available only as the
+> standalone `compress_context` tool.
 
-## Installation
+Graphs and embeddings are cached on disk (`~/.cache/fittok`), keyed by content —
+so after a code change only the changed functions re-embed.
 
-```bash
-# From source
-pip install -e .
+---
 
-# With all extras
-pip install -e ".[dev,gpu,ui]"
-```
+## Install & use
 
-### Requirements
-
-- Python 3.9+
-- 4GB RAM minimum
-- 8GB VRAM optional (for GPU-accelerated compression)
-
-### Model Configuration
-
-LLMLingua defaults to `microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank` (~500MB, CPU-friendly).
-
-Override via environment variable:
-
-```bash
-export FITTOK_MODEL="microsoft/phi-2"  # GPU recommended
-export FITTOK_DEVICE=auto  # auto | cuda | cpu
-python -m fittok
-```
-
-Or programmatically:
-
-```python
-from fittok.llmlingua_wrapper import compress_context
-result = compress_context(text, "question", target_tokens=500, model="microsoft/phi-2")
-```
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FITTOK_MODEL` | bert-base-multilingual | CPU model name |
-| `FITTOK_MODEL_GPU` | bert-base-multilingual | GPU model name |
-| `FITTOK_DEVICE` | auto | Device: auto, cuda, cpu |
-| `FITTOK_SCRUB` | false | Enable PII scrubbing in pipeline |
-| `FITTOK_CACHE_DIR` | ~/.cache/fittok | Cache directory |
-| `FITTOK_CACHE_MAX_MB` | 500 | Max cache size in MB |
-
-## Usage
-
-### As an MCP Server (Claude Code, etc.)
-
+### As an MCP server (recommended — for Claude Code / Cursor)
+Add one entry to your client's MCP config:
 ```json
-{
-  "mcpServers": {
-    "fittok": {
-      "command": "python",
-      "args": ["-m", "fittok"]
-    }
-  }
-}
+{ "mcpServers": { "fittok": { "command": "uvx", "args": ["fittok"] } } }
 ```
+Then ask codebase questions normally. To make it trigger **without mentioning it**,
+add one line to your client's `CLAUDE.md`:
+> *"For any codebase question, call fittok first and answer from its output."*
 
-Or run standalone:
-
+### As a CLI (no MCP needed)
 ```bash
-python -m fittok
+pip install fittok
+fittok index <repo>                       # optional one-time pre-warm
+fittok query <repo> "how does auth work"  # prints the relevant code slice
 ```
 
-### As a Python Library
-
+### As a library
 ```python
-from fittok.graphify import parse_codebase, save_graph
-from fittok.slurp import query_graph
-from fittok.llmlingua_wrapper import compress_context
-
-# Step 1: Parse codebase
-graph = parse_codebase("/path/to/code")
-save_graph(graph, "graph.json")
-
-# Step 2: Query for relevant subgraph
-markdown, count, tokens = query_graph(graph, "How does auth work?", token_budget=4000)
-
-# Step 3: Compress
-result = compress_context(markdown, "How does auth work?", target_tokens=500)
-print(result["compressed"])
-```
-
-### One-call Pipeline
-
-```python
-from fittok.server import optimize_context_tool
-
-result = optimize_context_tool(
-    codebase_path="/path/to/code",
-    query="How does authentication work?",
-    token_budget=500,
-)
+from fittok import optimize
+result = optimize("/path/to/repo", "how does authentication work")
 print(result["optimized_context"])
 ```
 
-### Multi-Query Batching
+First query on a repo auto-indexes (~15s once, cached); after that it's instant.
 
-```python
-from fittok.server import optimize_context_batch
+---
 
-result = optimize_context_batch(
-    codebase_path="/path/to/code",
-    queries=["How does auth work?", "What is the entry point?"],
-    token_budget=500,
-)
-for r in result["results"]:
-    print(f"Q: {r['query']}\nA: {r['optimized_context']}\n")
-```
+## Token savings — honest numbers
 
-### PII Scrubbing
+fittok cuts the **input/exploration cost** of a codebase question. On a real
+Next.js/TS repo (~5k functions) it returns a **~1.5–3.5k-token slice** instead of
+the model reading **15–20k+ tokens** of files — an **~80–90% reduction on input**,
+deterministic and reported in the tool's `savings` footer.
 
-```python
-from fittok.pii_scrubber import scrub_text
+**How to measure it honestly:**
+- ✅ Use the **`savings` footer** (e.g. `84% — 2,494 vs 15,631 tokens`) or your
+  **API bill** (total tokens — which counts the subagent crawls fittok avoids).
+- ⚠️ Do **not** judge by Claude Code's `/context` "Messages" number — it excludes
+  subagent tokens and is dominated by the model's own reasoning, which fittok
+  doesn't touch. On thorough models the real saving (e.g. ~84k → ~27k total
+  tokens, by avoiding an Explore subagent) is invisible there but clear on the bill.
 
-result = scrub_text("Contact admin@company.com with key AKIAIOSFODNN7EXAMPLE")
-print(result["scrubbed"])
-# "Contact [REDACTED_EMAIL] with key [REDACTED_AWS_ACCESS_KEY]"
-```
+**Where it shines:** broad / multi-file questions, large files, unfamiliar repos,
+and thorough models that would otherwise explore heavily. On a tiny question a
+capable model can answer from one small file, so the win is marginal there.
 
-## MCP Tools (v0.1.0)
+---
 
-| Tool | Description |
-|------|-------------|
-| `parse_codebase` | Parse code into a knowledge graph |
-| `query_graph` | Query graph for relevant subgraph |
-| `compress_context` | Compress text using LLMLingua |
-| `optimize_context` | Full pipeline: parse → query → compress |
+## Configuration (env vars)
 
-## MCP Tools (v0.2.0 — new)
+| Variable | Default | Purpose |
+|---|---|---|
+| `FITTOK_SHOW_SAVINGS` | `false` | Append a `🪙 saved X%` footer to answers |
+| `CONTEXT_OPTIMIZER_EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
+| `CONTEXT_OPTIMIZER_DEVICE` | `auto` | `auto` / `cuda` / `mps` / `cpu` |
+| `CONTEXT_OPTIMIZER_CACHE_DIR` | `~/.cache/fittok` | Cache location |
 
-| Tool | Description |
-|------|-------------|
-| `optimize_context_stream` | Streaming pipeline with stage-by-stage progress |
-| `optimize_context_batch` | One parse, many queries |
-| `optimize_context_structured` | JSON structured output with supporting nodes |
-| `parse_codebase_stream` | Chunked parsing with progress events |
-| `watch_start` / `watch_stop` | Incremental graph updates via file watcher |
-| `get_graph_stats` | Graph metadata and type distribution |
-| `reset_graph` | Force full re-parse, ignoring cache |
-| `diff_graph` | Compare two knowledge graphs |
-| `scrub_text` / `scrub_file` | PII detection and redaction |
-| `list_pii_patterns` / `add_pii_pattern` | Manage PII patterns |
-| `clear_cache` / `cache_stats` | Cache management |
-| `launch_ui` | Launch web visualization dashboard |
-
-## Supported Languages
-
-- Python
-- JavaScript / TypeScript
-- Java
-- Go
-- Rust
-
-## Running Tests
-
-```bash
-pip install -e ".[dev]"
-pytest tests/ -v
-```
-
-## Architecture
-
-```
-fittok/
-├── pyproject.toml
-├── src/fittok/
-│   ├── __init__.py
-│   ├── server.py              # MCP server (FastMCP)
-│   ├── graphify.py            # Code → knowledge graph
-│   ├── slurp.py               # Graph query engine
-│   ├── llmlingua_wrapper.py   # Compression wrapper (CPU + GPU)
-│   ├── models.py              # Pydantic data models
-│   ├── tokens.py              # Shared token counting
-│   ├── cache.py               # 3-level persistent cache
-│   ├── diff.py                # Graph diffing
-│   ├── pii_scrubber.py        # PII detection & redaction
-│   ├── watcher.py             # File watcher for incremental updates
-│   └── ui.py                  # Web visualization (Gradio + pyvis)
-├── tests/
-│   ├── test_graphify.py
-│   ├── test_slurp.py
-│   ├── test_llmlingua.py
-│   ├── test_server.py
-│   ├── test_server_v2.py
-│   ├── test_cache.py
-│   ├── test_diff.py
-│   └── test_pii_scrubber.py
-├── examples/
-│   └── usage.py
-├── README.md
-└── LICENSE
-```
+## Requirements
+Python ≥ 3.10. First run downloads a ~90 MB embedding model. Optional extras:
+`pip install "fittok[ui]"` (graph visualizer), `"fittok[gpu]"` (torch/CUDA).
 
 ## License
-
-MIT
+MIT.
