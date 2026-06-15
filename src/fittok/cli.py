@@ -192,6 +192,8 @@ def main(argv: list[str] | None = None) -> None:
         prog="fittok",
         description="Retrieve the most relevant source code for a query, within a token budget.",
     )
+    from . import __version__
+    parser.add_argument("--version", action="version", version=f"fittok {__version__}")
     sub = parser.add_subparsers(dest="cmd")
 
     sub.add_parser("serve", help="Run the MCP server over stdio (for AI clients).")
