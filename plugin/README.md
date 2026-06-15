@@ -11,9 +11,8 @@ Bundles two layers so token-optimized context "just happens" in Claude Code:
 
 ## Install
 
-Requires `fittok` available to the hook. Either publish/install it
-(`uvx fittok` works once it's on PyPI; or `pipx install fittok`), or point the
-hook at a local install via `FITTOK_BIN`.
+Requires `fittok` reachable by the hook. The default uses `uvx fittok` (it's on
+PyPI); for a local checkout, point the hook at it via `FITTOK_BIN`.
 
 ```bash
 # Local plugin (no marketplace):
@@ -27,7 +26,7 @@ The first codebase question triggers a one-time index (parse + embeddings, ~15s)
 that the hook runs synchronously. Pre-warm once to avoid that first-prompt delay:
 
 ```bash
-fittok index /path/to/your/repo
+uvx fittok index /path/to/your/repo
 ```
 
 ## Tuning (env vars)

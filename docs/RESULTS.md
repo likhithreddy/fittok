@@ -64,7 +64,8 @@ change only re-embeds what changed.
 **Auto-trigger without mentioning it:** add one line to your client's `CLAUDE.md` —
 > *"For any codebase question, call fittok first and answer from its output."*
 
-**CLI / library:** `pip install fittok`, then `fittok query <repo> "<q>"` or
+**CLI (no install):** `uvx fittok query <repo> "<q>"`.
+**Library:** `uv add fittok` (or `uv pip install fittok`), then
 `from fittok import optimize; optimize("<repo>", "<q>")`.
 
 ---
@@ -137,9 +138,8 @@ where the saving is unambiguous.
 ## 7. Reproduce it yourself
 
 ```bash
-pip install fittok          # or: uvx fittok ...
-fittok index   <your-repo>  # one-time pre-warm (parse + embeddings, cached)
-fittok query   <your-repo> "how does <feature> work"   # prints the slice + savings on stderr
+uvx fittok index <your-repo>   # one-time pre-warm (parse + embeddings, cached)
+uvx fittok query <your-repo> "how does <feature> work"   # prints the slice + savings on stderr
 ```
 The stderr line shows `Sent X tokens instead of Y (Z% reduction)` — the deterministic proof.
 

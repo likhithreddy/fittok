@@ -37,27 +37,40 @@ so after a code change only the changed functions re-embed.
 
 ## Install & use
 
-### As an MCP server (recommended — for Claude Code / Cursor)
-Add one entry to your client's MCP config:
+fittok runs through **[`uv`](https://docs.astral.sh/uv/)** — one tool for everything
+below, with no manual `pip install`. Install it once:
+```bash
+brew install uv                                  # macOS
+# or any OS:  curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### As an MCP server (recommended — Claude Code / Cursor / Windsurf)
+
+**Claude Code — one command:**
+```bash
+claude mcp add fittok -- uvx fittok      # add -s user to enable it in every project
+```
+Restart Claude Code, then run `/mcp` to confirm `fittok` shows **connected**.
+
+**Cursor / Windsurf / any MCP client — add to its MCP config:**
 ```json
 { "mcpServers": { "fittok": { "command": "uvx", "args": ["fittok"] } } }
 ```
-Then ask codebase questions normally. To make it trigger **without mentioning it**,
-add one line to your client's `CLAUDE.md`:
+
+Then ask codebase questions normally. To make fittok trigger **without mentioning
+it**, add one line to your client's `CLAUDE.md`:
 > *"For any codebase question, call fittok first and answer from its output."*
 
-### As a CLI (no MCP needed)
+### As a CLI (no MCP, no install — `uvx` fetches + runs it)
 ```bash
-pipx install fittok                       # recommended global install (macOS/Homebrew-safe)
-# or, inside a venv:   python3 -m venv .venv && .venv/bin/pip install fittok
-# or, plain pip on an unmanaged Python:   pip install fittok
-fittok index <repo>                       # optional one-time pre-warm
-fittok query <repo> "how does auth work"  # prints the relevant code slice
+uvx fittok index <repo>                       # optional one-time pre-warm
+uvx fittok query <repo> "how does auth work"  # prints the relevant code slice
 ```
-> On Homebrew / newer Debian **system** Python, a global `pip install` is blocked
-> (PEP 668). Use `pipx`, a venv, or `uvx fittok` (no install) — not bare `pip`.
 
 ### As a library
+```bash
+uv add fittok            # in a uv project   (or:  uv pip install fittok  in a venv)
+```
 ```python
 from fittok import optimize
 result = optimize("/path/to/repo", "how does authentication work")
@@ -94,13 +107,13 @@ capable model can answer from one small file, so the win is marginal there.
 | Variable | Default | Purpose |
 |---|---|---|
 | `FITTOK_SHOW_SAVINGS` | `false` | Append a `🪙 saved X%` footer to answers |
-| `CONTEXT_OPTIMIZER_EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
-| `CONTEXT_OPTIMIZER_DEVICE` | `auto` | `auto` / `cuda` / `mps` / `cpu` |
-| `CONTEXT_OPTIMIZER_CACHE_DIR` | `~/.cache/fittok` | Cache location |
+| `FITTOK_EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
+| `FITTOK_DEVICE` | `auto` | `auto` / `cuda` / `mps` / `cpu` |
+| `FITTOK_CACHE_DIR` | `~/.cache/fittok` | Cache location |
 
 ## Requirements
 Python ≥ 3.10. First run downloads a ~90 MB embedding model. Optional extras:
-`pip install "fittok[ui]"` (graph visualizer), `"fittok[gpu]"` (torch/CUDA).
+`uv pip install "fittok[ui]"` (graph visualizer), `"fittok[gpu]"` (torch/CUDA).
 
 ## License
 MIT.

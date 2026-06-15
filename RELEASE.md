@@ -32,13 +32,14 @@ python -m twine upload dist/*
 ```
 
 ## 5. After publish — how users consume it
+Everything runs through `uv` (install once: `brew install uv`). No manual pip install.
 ```bash
-pip install fittok          # core (retrieval + embeddings)
-pip install "fittok[ui]"    # + Gradio/pyvis graph visualizer
+uvx fittok query <repo> "how does X work"   # CLI, fetched + run on demand
+uv add fittok                                # as a library (or: uv pip install fittok)
 ```
 Register the MCP server (user scope, available in every repo):
 ```bash
-claude mcp add fittok --scope user -- python -m fittok
+claude mcp add fittok --scope user -- uvx fittok
 ```
 Optional pre-warm so the first query is instant:
 ```bash
