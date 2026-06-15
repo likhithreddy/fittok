@@ -75,9 +75,8 @@ mcp = FastMCP(
 
 SCRUB_ENABLED = os.environ.get("FITTOK_SCRUB", "false").lower() in ("true", "1", "yes")
 # When on, the tool asks the model to surface a one-line savings footer to the
-# user. Default off (most users want clean answers, not stats) — turn on for
-# demos / proving the token savings.
-SHOW_SAVINGS = os.environ.get("FITTOK_SHOW_SAVINGS", "false").lower() in ("true", "1", "yes")
+# user. Default on — set FITTOK_SHOW_SAVINGS=false to disable.
+SHOW_SAVINGS = os.environ.get("FITTOK_SHOW_SAVINGS", "true").lower() not in ("false", "0", "no")
 
 
 def _graph_output_path(resolved: Path) -> str:
