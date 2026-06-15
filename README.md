@@ -48,10 +48,14 @@ add one line to your client's `CLAUDE.md`:
 
 ### As a CLI (no MCP needed)
 ```bash
-pip install fittok
+pipx install fittok                       # recommended global install (macOS/Homebrew-safe)
+# or, inside a venv:   python3 -m venv .venv && .venv/bin/pip install fittok
+# or, plain pip on an unmanaged Python:   pip install fittok
 fittok index <repo>                       # optional one-time pre-warm
 fittok query <repo> "how does auth work"  # prints the relevant code slice
 ```
+> On Homebrew / newer Debian **system** Python, a global `pip install` is blocked
+> (PEP 668). Use `pipx`, a venv, or `uvx fittok` (no install) — not bare `pip`.
 
 ### As a library
 ```python

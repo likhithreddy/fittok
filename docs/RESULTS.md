@@ -8,11 +8,13 @@
 
 ## TL;DR
 
-- On a real Next.js/TypeScript codebase (≈5k functions), fittok answers a focused
-  question from a **~1.2–3.5k-token slice instead of the ~9–20k tokens** the model
-  would otherwise read — a **60–91% reduction in input context**, same answer.
-- In a live Claude Code session, the same question consumed **~18.9k tokens without
-  fittok vs ~10.7k with it** (one tool call, zero file reads).
+- On a real Next.js/TypeScript codebase (≈5k functions), fittok answers a question
+  from a **~1.5–3.5k-token slice instead of the ~13–20k tokens** the model would
+  otherwise read — an **~80–90% reduction in input context** (deterministic, in the
+  tool's `savings` footer), same answer.
+- On a thorough model (Opus 4.8) a broad question cost **~84k total tokens without
+  fittok vs ~27k with it** — because fittok let it answer in one tool call instead
+  of spawning a 58k-token file-exploration subagent.
 - It works three ways from one install — **MCP server, CLI, and Python library** —
   plus a **Claude Code plugin** that injects the context automatically.
 
@@ -83,18 +85,25 @@ Measured directly via `fittok query` on the `mira` repo (adaptive budget). "Base
 
 This number is **deterministic** — same every run, independent of the host model.
 
-### 5b. End-to-end session — with vs without (live `/context`)
+### 5b. End-to-end, in a real client — and how to measure it honestly
 
-Same focused question, same repo, in Claude Code:
+A **broad** pipeline question on `mira`, same prompt both sides, answer length held
+constant ("~5 sentences"):
 
-| | Without fittok | With fittok |
-|---|---|---|
-| fittok calls | 0 | 1 |
-| Files the model read | several | 0 |
-| Context consumed (`Messages`) | **~18.9k** | **~10.7k** |
+| Model | Without fittok (total tokens) | With fittok | fittok footer |
+|---|---|---|---|
+| Opus 4.8 | **~84k** (26k messages + **58.4k Explore subagent**) | **~27k** (1 call, 0 reads) | 84% (2,494 vs 15,631) |
+| glm-5.1 | ~21k messages (~5 file reads) | ~17.5k messages | 86.6% |
 
-> _Note: a fixed ~5.3k of "MCP tools" overhead is present in both and cancels out;
-> the comparison is the `Messages` delta._
+**Measure total token spend (your API bill) or the `savings` footer — NOT Claude
+Code's `/context` "Messages" number.** `/context` Messages:
+- **excludes subagent tokens** — Opus's 58.4k Explore crawl never appears there, so
+  the without-fittok cost is massively under-reported;
+- **is dominated by the model's own reasoning**, which fittok doesn't touch and which
+  varies wildly run-to-run.
+
+So on `/context` Messages alone the two columns can look equal, while the **real
+billed cost differs ~3×**. The footer and the bill tell the truth; `/context` hides it.
 
 ### 5c. Selectivity proof
 
@@ -105,31 +114,23 @@ domains.
 
 ---
 
-## 6. Live demo — screenshots (fill in from your run)
+## 6. What "noise" looks like (and why narrow questions mislead)
 
-> Replace each placeholder with your screenshot and the measured numbers.
+The same broad question was run across two models. The takeaway: the **win scales
+with how much the model would otherwise explore**, and the noise is the model's
+*reasoning*, which fittok doesn't change.
 
-**Question used:** `How does silence detection end the candidate's turn?`
+- **Narrow question** ("how does silence detection end a turn"): the answer lives in
+  ~2 small files. A capable model reads them cheaply, and its reasoning (~8–24k,
+  varying) dwarfs the tiny input difference — so `/context` shows a near-tie even
+  though fittok still sent less. **Small questions are fittok's worst case.**
+- **Broad question** ("walk me through the whole pipeline"): the model must read
+  10–17 files (or spawn a subagent). Here fittok's slice (~2.5k) replaces 15–58k of
+  exploration — a large, real win, biggest on thorough models (see §5b).
 
-### Without fittok  ✅ measured
-- `/context` before — Messages: **1.1k** (total 37.4k)
-- `/context` after — Messages: **11.5k** (total 46.9k)
-- Files read directly: **~5** (`silenceDetector.ts`, `useSpeechRecognition.ts`,
-  `speechRecognitionWrapper.ts`, + grep/cat of `submitAnswer.ts`, `constants.ts`)
-- **Context consumed (delta): ≈10.4k tokens**
-- _[screenshot ①: `/context` before] · [screenshot ②: `/context` after]_
-
-### With fittok  ⏳ pending
-- `/context` before — Messages: `____`
-- `/context` after — Messages: `____`
-- fittok calls: `____` (target 1) · files read: `____` (target 0)
-- fittok's own `savings`: `____`% (`____` vs `____` tokens)
-- _[screenshot ④: before] · [⑤: after] · [⑥: tool call + savings] · [⑦: answer + 🪙 footer]_
-
-### Result
-> Same focused question, same repo. **Without fittok** the model ran ~5 reads/greps
-> and consumed **≈10.4k tokens** of context. **With fittok** it answered from one
-> `~__k`-token slice — **`__`% less context, same answer.**
+**Bottom line:** judge fittok by the **deterministic footer** and the **total token
+bill**, on **broad/multi-file questions** — that's where it's designed to help and
+where the saving is unambiguous.
 
 ---
 
