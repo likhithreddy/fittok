@@ -138,8 +138,9 @@ where the saving is unambiguous.
 ## 7. Reproduce it yourself
 
 ```bash
-uvx fittok index <your-repo>   # one-time pre-warm (parse + embeddings, cached)
-uvx fittok query <your-repo> "how does <feature> work"   # prints the slice + savings on stderr
+cd /path/to/your-repo
+uvx fittok index                            # one-time pre-warm (parse + embeddings, cached)
+uvx fittok query "how does <feature> work"  # prints the slice + savings on stderr
 ```
 The stderr line shows `Sent X tokens instead of Y (Z% reduction)` — the deterministic proof.
 

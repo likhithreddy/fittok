@@ -7,6 +7,8 @@ slice of context.** Less input = fewer tokens, lower cost, faster answers.
 Works three ways from one install: an **MCP server**, a **CLI**, and a **Python
 library** — plus a **Claude Code plugin** that injects context automatically.
 
+📖 **[Full command reference → docs/HANDBOOK.md](docs/HANDBOOK.md)**
+
 ---
 
 ## How it works
@@ -25,11 +27,6 @@ codebase ──▶ graphify ──▶ slurp ──▶ readable slice ──▶ L
    top-ranked in full and the supporting tail as signatures, trimmed to a budget.
    The model answers directly from it.
 
-> Note: an earlier design compressed the slice with LLMLingua, but that produced
-> unreadable token-salad the model ignored (then re-read the files). fittok
-> returns **real, readable code** instead. LLMLingua remains available only as the
-> standalone `compress_context` tool.
-
 Graphs and embeddings are cached on disk (`~/.cache/fittok`), keyed by content —
 so after a code change only the changed functions re-embed.
 
@@ -39,81 +36,107 @@ so after a code change only the changed functions re-embed.
 
 fittok runs through **[`uv`](https://docs.astral.sh/uv/)** — one tool for everything
 below, with no manual `pip install`. Install it once:
+
 ```bash
 brew install uv                                  # macOS
 # or any OS:  curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### As an MCP server (recommended — Claude Code / Cursor / Windsurf)
+### MCP server — Claude Code / Cursor / Windsurf
 
-**Claude Code — one command:**
+**Claude Code:**
 ```bash
-claude mcp add fittok -- uvx fittok      # add -s user to enable it in every project
+claude mcp add fittok -s user -- uvx fittok
 ```
-Restart Claude Code, then run `/mcp` to confirm `fittok` shows **connected**.
+Restart Claude Code → `/mcp` → confirm `fittok` is **connected**. Then ask
+codebase questions normally — fittok fires automatically.
 
-**Cursor / Windsurf / any MCP client — add to its MCP config:**
+**Cursor / Windsurf / any MCP client:**
 ```json
 { "mcpServers": { "fittok": { "command": "uvx", "args": ["fittok"] } } }
 ```
 
-Then ask codebase questions normally. To make fittok trigger **without mentioning
-it**, add one line to your client's `CLAUDE.md`:
+To make fittok trigger **without mentioning it by name**, add to `CLAUDE.md`:
 > *"For any codebase question, call fittok first and answer from its output."*
 
-### As a CLI (no MCP, no install — `uvx` fetches + runs it)
+### CLI
+
 ```bash
-uvx fittok index <repo>                       # optional one-time pre-warm
-uvx fittok query <repo> "how does auth work"  # prints the relevant code slice
+cd /path/to/your/repo
+
+uvx fittok index                                      # optional pre-warm (~15s, cached)
+uvx fittok query "how does auth work"                 # LLM answers from relevant code
+uvx fittok query "how does auth work" --budget 1500   # cap the slice at 1500 tokens
+uvx fittok query "how does auth work" --code          # raw relevant code, no LLM
+uvx fittok graph                                      # interactive browser graph
+uvx fittok graph --query "auth"                       # graph with relevant nodes highlighted
 ```
 
-### As a library
+`query` sends the relevant code slice to an LLM and streams the answer.
+Set one key in your shell and it just works:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."   # → claude-haiku-4-5  (recommended)
+export OPENAI_API_KEY="sk-..."          # → gpt-4o-mini  (fallback)
+```
+
+Users of Claude Code already have `ANTHROPIC_API_KEY` set — no extra step needed.
+If neither key is set, fittok falls back to `--code` and prints a setup hint.
+
+`graph` requires `pyvis`: `uv pip install "fittok[ui]"`.
+
+### Python library
+
 ```bash
 uv add fittok            # in a uv project   (or:  uv pip install fittok  in a venv)
 ```
 ```python
 from fittok import optimize
-result = optimize("/path/to/repo", "how does authentication work")
-print(result["optimized_context"])
-```
 
-First query on a repo auto-indexes (~15s once, cached); after that it's instant.
+result = optimize("/path/to/repo", "how does authentication work", token_budget=1500)
+print(result["optimized_context"])   # the relevant code slice
+print(result["savings"])             # token reduction stats
+```
 
 ---
 
 ## Token savings — honest numbers
 
-fittok cuts the **input/exploration cost** of a codebase question. On a real
-Next.js/TS repo (~5k functions) it returns a **~1.5–3.5k-token slice** instead of
-the model reading **15–20k+ tokens** of files — an **~80–90% reduction on input**,
-deterministic and reported in the tool's `savings` footer.
+On a real Next.js/TS repo (~5k functions), fittok returns a **~1.5–3.5k-token
+slice** instead of the model reading **15–20k+ tokens** of files — an **~80–90%
+reduction on input**, deterministic and reported in the `savings` footer.
+
+On Opus 4.8, a broad question cost **~84k total tokens without fittok vs ~27k
+with it** — because fittok replaced a 58k-token Explore subagent with one tool call.
 
 **How to measure it honestly:**
-- ✅ Use the **`savings` footer** (e.g. `84% — 2,494 vs 15,631 tokens`) or your
-  **API bill** (total tokens — which counts the subagent crawls fittok avoids).
-- ⚠️ Do **not** judge by Claude Code's `/context` "Messages" number — it excludes
-  subagent tokens and is dominated by the model's own reasoning, which fittok
-  doesn't touch. On thorough models the real saving (e.g. ~84k → ~27k total
-  tokens, by avoiding an Explore subagent) is invisible there but clear on the bill.
-
-**Where it shines:** broad / multi-file questions, large files, unfamiliar repos,
-and thorough models that would otherwise explore heavily. On a tiny question a
-capable model can answer from one small file, so the win is marginal there.
+- Use the **`🪙 saved X%` footer** or your **API bill** (total tokens).
+- Do *not* judge by Claude Code's `/context` Messages number — it excludes
+  subagent tokens and is dominated by model reasoning, which fittok doesn't touch.
 
 ---
 
-## Configuration (env vars)
+## Configuration
 
-| Variable | Default | Purpose |
+| Variable | Default | Description |
 |---|---|---|
-| `FITTOK_SHOW_SAVINGS` | `false` | Append a `🪙 saved X%` footer to answers |
+| `ANTHROPIC_API_KEY` | — | Enables LLM answers via `claude-haiku-4-5` |
+| `OPENAI_API_KEY` | — | Fallback LLM via `gpt-4o-mini` |
+| `FITTOK_SHOW_SAVINGS` | `true` | `🪙 saved X%` footer on MCP answers; set `false` to disable |
 | `FITTOK_EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
 | `FITTOK_DEVICE` | `auto` | `auto` / `cuda` / `mps` / `cpu` |
 | `FITTOK_CACHE_DIR` | `~/.cache/fittok` | Cache location |
 
+Full reference: **[docs/HANDBOOK.md](docs/HANDBOOK.md)**
+
+---
+
 ## Requirements
+
 Python ≥ 3.10. First run downloads a ~90 MB embedding model. Optional extras:
-`uv pip install "fittok[ui]"` (graph visualizer), `"fittok[gpu]"` (torch/CUDA).
+- `uv pip install "fittok[ui]"` — graph visualizer (`fittok graph`)
+- `uv pip install "fittok[gpu]"` — torch/CUDA for GPU-accelerated embeddings
 
 ## License
-MIT.
+
+MIT

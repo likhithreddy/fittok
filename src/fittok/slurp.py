@@ -495,3 +495,24 @@ def query_graph(
         }
 
     return markdown, len(selected), tokens_used
+
+
+def score_nodes(graph, query: str) -> dict[str, float]:
+    """Return a node_id → combined relevance score dict for the given query.
+
+    Used by `fittok graph --query` to highlight relevant nodes without
+    running the full selection pipeline.
+    """
+    from . import embeddings
+
+    content_nodes = [n for n in graph.nodes if n.type.value not in ("file", "import")]
+    if not content_nodes:
+        return {}
+
+    semantic = embeddings.semantic_scores(content_nodes, query)
+    scores = _compute_combined_scores(
+        content_nodes, graph.edges, query,
+        pagerank_weight=0.15, tfidf_weight=0.25,
+        semantic=semantic,
+    )
+    return scores
