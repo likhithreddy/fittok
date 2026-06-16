@@ -74,6 +74,14 @@ fittok-index = "fittok.indexer:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/fittok"]
 
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "demo/",
+    "examples/",
+    ".claude/",
+    "uv.lock",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

@@ -7,7 +7,7 @@ slice of context.** Less input = fewer tokens, lower cost, faster answers.
 Works three ways from one install: an **MCP server**, a **CLI**, and a **Python
 library** — plus a **Claude Code plugin** that injects context automatically.
 
-📖 **[Full command reference → docs/HANDBOOK.md](docs/HANDBOOK.md)**
+📖 **[Full command reference → docs/HANDBOOK.md](https://github.com/likhithreddy/fittok/blob/main/docs/HANDBOOK.md)**
 
 ---
 
@@ -127,7 +127,7 @@ with it** — because fittok replaced a 58k-token Explore subagent with one tool
 | `FITTOK_DEVICE` | `auto` | `auto` / `cuda` / `mps` / `cpu` |
 | `FITTOK_CACHE_DIR` | `~/.cache/fittok` | Cache location |
 
-Full reference: **[docs/HANDBOOK.md](docs/HANDBOOK.md)**
+Full reference: **[docs/HANDBOOK.md](https://github.com/likhithreddy/fittok/blob/main/docs/HANDBOOK.md)**
 
 ---
 
