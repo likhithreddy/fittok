@@ -62,6 +62,78 @@ codebase questions normally — fittok fires automatically.
 To make fittok trigger **without mentioning it by name**, add to `CLAUDE.md`:
 > *"For any codebase question, call fittok first and answer from its output."*
 
+### GitHub Copilot (VS Code + Copilot CLI)
+
+**VS Code / Copilot Chat** — add to `.vscode/mcp.json` (or *Command Palette →
+MCP: Add Server*):
+
+```json
+{
+  "servers": {
+    "fittok": { "type": "stdio", "command": "uvx", "args": ["fittok"] }
+  }
+}
+```
+
+In Copilot Chat, switch to **Agent** mode and enable fittok's tools via the
+*Configure Tools* button. To make fittok fire automatically on every codebase
+question — not just when you mention it by name — add to
+`.github/copilot-instructions.md`:
+
+> *"For any codebase question, call fittok first and answer from its output."*
+
+**Copilot CLI** (standalone `copilot` binary):
+
+```bash
+copilot mcp add fittok -- uvx fittok
+```
+
+> No `uv`? Once fittok is `pip install`ed, swap the command for
+> `python -m fittok` — see **Enterprise & locked-down environments** below.
+
+### Enterprise & locked-down environments (no `uv` / no Python)
+
+fittok's relevance scoring uses `sentence-transformers` (which pulls in
+`torch`), so a *local* install always needs those native wheels on the machine.
+Pick the option that fits your constraints:
+
+**1. `pip install` + `python -m fittok`** — Python already on the machine:
+
+```bash
+python -m pip install fittok
+# keep the heavy deps isolated in a venv:
+python -m venv ~/.venvs/fittok && ~/.venvs/fittok/bin/pip install fittok
+```
+
+MCP config command: `"command": "python", "args": ["-m", "fittok"]`
+(use the venv's absolute Python path on Windows — JSON configs don't expand `~`).
+
+**2. Bootstrap `uv`** — needs *no Python* (`uv` is a single static binary):
+
+```bash
+# Linux/macOS — no Python required:
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Windows:
+winget install astral-sh.uv
+```
+
+Then `uvx fittok` — `uv` provisions its own Python and all deps in isolation.
+Deployable org-wide via MDM/Intune since `uv` is one static binary.
+
+**3. Remote MCP server (zero client runtime — best for large orgs)** — host
+fittok as an HTTP MCP server inside your network; every machine just connects
+to a URL. No Python, no `uv`, no Docker on laptops:
+
+```json
+{ "servers": { "fittok": { "type": "http", "url": "https://fittok.internal/mcp" } } }
+```
+
+Best where the codebase is reachable from the server (Codespaces, dev
+containers, or a shared/monorepo path). Put it behind your SSO/proxy for auth.
+
+> A true no-runtime *local* build (standalone PyInstaller binary) is possible
+> but heavy (~1 GB per platform) due to `torch` — open an issue if you need it.
+
 ### CLI
 
 ```bash
