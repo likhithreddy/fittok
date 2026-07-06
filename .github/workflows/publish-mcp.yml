@@ -1,22 +1,36 @@
-name: Publish to MCP Registry
+name: Publish to PyPI + MCP Registry
 
-# Publishes fittok to the open-source MCP Registry on every release tag.
-# The matching version MUST already be on PyPI first — mcp-publisher verifies
-# PyPI ownership via the `mcp-name:` line in README.md.
+# On every release tag: build once, publish to PyPI via OIDC trusted publishing
+# (no token needed), then register server.json with the MCP Registry.
+#
+# One-time setup: add GitHub as a Trusted Publisher for fittok on PyPI:
+#   https://pypi.org/manage/project/fittok/publishing/
+#   Owner: likhithreddy · Repo: fittok · Workflow name: publish-mcp.yml
+#   (Environment: leave blank)
+# Without this, the PyPI step will fail.
 
 on:
   push:
     tags: ["v*"]
 
 jobs:
-  publish-mcp:
+  publish:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write   # OIDC for `mcp-publisher login github-oidc`
+      id-token: write   # OIDC for PyPI trusted publishing AND mcp-publisher
       contents: read
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build
+        run: uv build
+
+      - name: Publish to PyPI (trusted publishing, no token)
+        run: uv publish
 
       - name: Sync server.json version to the git tag
         run: |
