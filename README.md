@@ -35,90 +35,90 @@ so after a code change only the changed functions re-embed.
 
 ---
 
-## Install & use
+## Installation
 
-fittok runs through **[`uv`](https://docs.astral.sh/uv/)** — one tool for everything
-below, with no manual `pip install`. Install it once:
+fittok ships as an **MCP server**, a **CLI**, and a **Python library**. It uses
+`torch` for embeddings, so a Python runtime must be present. **Pick one runtime**
+below, then follow the section for your client.
+
+> Every config below launches fittok as `uvx fittok`. If you chose Python or
+> `pipx`, swap that for `python -m fittok` or `pipx run fittok` respectively.
+
+### Prerequisites — choose a runtime (one of)
+
+**A. `uv` — recommended (no Python needed on the machine)**
 
 ```bash
-brew install uv                                  # macOS
-# or any OS:  curl -LsSf https://astral.sh/uv/install.sh | sh
+curl -LsSf https://astral.sh/uv/install.sh | sh   # Linux / macOS
+winget install astral-sh.uv                        # Windows
+brew install uv                                    # macOS (Homebrew)
 ```
+Launch command: `uvx fittok` — `uv` provisions its own Python + all deps in
+isolation. One static binary, so it's deployable org-wide via MDM/Intune/winget.
 
-### MCP server — Claude Code / Cursor / Windsurf
+**B. Python 3.10+ (already on the machine)**
 
-**Claude Code:**
+```bash
+python -m pip install fittok      # Linux / macOS
+py    -m pip install fittok       # Windows
+```
+Launch command: `python -m fittok` (Windows: `py -m fittok`).
+> Managed Linux may reject `pip install` with PEP 668
+> ("externally-managed-environment") — use option A to avoid it.
+
+**C. `pipx` — isolated, no global install**
+
+```bash
+brew install pipx                               # macOS
+pip install --user pipx && pipx ensurepath      # Linux / Windows
+```
+Launch command: `pipx run fittok`.
+
+### MCP server — Claude Code
+
 ```bash
 claude mcp add fittok -s user -- uvx fittok
 ```
-Restart Claude Code → `/mcp` → confirm `fittok` is **connected**. Then ask
-codebase questions normally — fittok fires automatically.
+Restart Claude Code → `/mcp` → confirm `fittok` is **connected**, then ask
+codebase questions normally.
 
-**Cursor / Windsurf / any MCP client:**
+### MCP server — VS Code / GitHub Copilot Chat
+
+```bash
+code --add-mcp '{"name":"fittok","command":"uvx","args":["fittok"]}'
+```
+Or paste into `.vscode/mcp.json` (workspace) or your user `mcp.json`:
+```json
+{ "servers": { "fittok": { "type": "stdio", "command": "uvx", "args": ["fittok"] } } }
+```
+Then in Copilot Chat: **Agent** mode → enable fittok's tools (*Configure Tools*).
+
+### MCP server — GitHub Copilot CLI
+
+```bash
+copilot mcp add fittok -- uvx fittok
+copilot mcp get fittok          # verify status + tools
+```
+
+### MCP server — Cursor / Windsurf / any MCP client
+
 ```json
 { "mcpServers": { "fittok": { "command": "uvx", "args": ["fittok"] } } }
 ```
 
-To make fittok trigger **without mentioning it by name**, add to `CLAUDE.md`:
-> *"For any codebase question, call fittok first and answer from its output."*
+### Auto-trigger (optional, every MCP client)
 
-### GitHub Copilot (VS Code + Copilot CLI)
-
-**VS Code / Copilot Chat** — add to `.vscode/mcp.json` (or *Command Palette →
-MCP: Add Server*):
-
-```json
-{
-  "servers": {
-    "fittok": { "type": "stdio", "command": "uvx", "args": ["fittok"] }
-  }
-}
-```
-
-In Copilot Chat, switch to **Agent** mode and enable fittok's tools via the
-*Configure Tools* button. To make fittok fire automatically on every codebase
-question — not just when you mention it by name — add to
-`.github/copilot-instructions.md`:
+To make fittok fire on **every** codebase question — without naming it — add
+this one line to your client's instructions file:
 
 > *"For any codebase question, call fittok first and answer from its output."*
 
-**Copilot CLI** (standalone `copilot` binary):
-
-```bash
-copilot mcp add fittok -- uvx fittok
-```
-
-> No `uv`? Once fittok is `pip install`ed, swap the command for
-> `python -m fittok` — see **Enterprise & locked-down environments** below.
-
-### Enterprise & locked-down environments (no `uv` / no Python)
-
-fittok's relevance scoring uses `sentence-transformers` (which pulls in
-`torch`), so a *local* install always needs those native wheels on the machine.
-Pick the option that fits your constraints:
-
-**1. `pip install` + `python -m fittok`** — Python already on the machine:
-
-```bash
-python -m pip install fittok
-# keep the heavy deps isolated in a venv:
-python -m venv ~/.venvs/fittok && ~/.venvs/fittok/bin/pip install fittok
-```
-
-MCP config command: `"command": "python", "args": ["-m", "fittok"]`
-(use the venv's absolute Python path on Windows — JSON configs don't expand `~`).
-
-**2. Bootstrap `uv`** — needs *no Python* (`uv` is a single static binary):
-
-```bash
-# Linux/macOS — no Python required:
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# Windows:
-winget install astral-sh.uv
-```
-
-Then `uvx fittok` — `uv` provisions its own Python and all deps in isolation.
-Deployable org-wide via MDM/Intune since `uv` is one static binary.
+| Client | Instructions file |
+|---|---|
+| Claude Code | `CLAUDE.md` |
+| GitHub Copilot | `.github/copilot-instructions.md` |
+| Cursor | `.cursor/rules/*.mdc` (or `.cursorrules`) |
+| Windsurf | `.windsurfrules` |
 
 ### CLI
 
