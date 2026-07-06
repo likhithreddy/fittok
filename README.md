@@ -120,20 +120,6 @@ winget install astral-sh.uv
 Then `uvx fittok` — `uv` provisions its own Python and all deps in isolation.
 Deployable org-wide via MDM/Intune since `uv` is one static binary.
 
-**3. Remote MCP server (zero client runtime — best for large orgs)** — host
-fittok as an HTTP MCP server inside your network; every machine just connects
-to a URL. No Python, no `uv`, no Docker on laptops:
-
-```json
-{ "servers": { "fittok": { "type": "http", "url": "https://fittok.internal/mcp" } } }
-```
-
-Best where the codebase is reachable from the server (Codespaces, dev
-containers, or a shared/monorepo path). Put it behind your SSO/proxy for auth.
-
-> A true no-runtime *local* build (standalone PyInstaller binary) is possible
-> but heavy (~1 GB per platform) due to `torch` — open an issue if you need it.
-
 ### CLI
 
 ```bash
