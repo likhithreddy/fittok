@@ -1,0 +1,41 @@
+name: Publish to MCP Registry
+
+# Publishes fittok to the open-source MCP Registry on every release tag.
+# The matching version MUST already be on PyPI first — mcp-publisher verifies
+# PyPI ownership via the `mcp-name:` line in README.md.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish-mcp:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # OIDC for `mcp-publisher login github-oidc`
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync server.json version to the git tag
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          python3 -c "
+          import json, sys
+          v = sys.argv[1]
+          d = json.load(open('server.json'))
+          d['version'] = v
+          for pkg in d.get('packages', []):
+              pkg['version'] = v
+          json.dump(d, open('server.json', 'w'), indent=2)
+          " "$VERSION"
+
+      - name: Download MCP Publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/download/latest/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Publish to MCP Registry
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish

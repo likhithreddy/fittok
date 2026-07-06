@@ -9,6 +9,9 @@ library** — plus a **Claude Code plugin** that injects context automatically.
 
 📖 **[Full command reference → docs/HANDBOOK.md](https://github.com/likhithreddy/fittok/blob/main/docs/HANDBOOK.md)**
 
+<!-- MCP Registry: PyPI ownership verification — do not remove this line -->
+mcp-name: io.github.likhithreddy/fittok
+
 ---
 
 ## How it works
