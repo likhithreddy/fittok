@@ -108,17 +108,37 @@ copilot mcp get fittok          # verify status + tools
 
 ### Auto-trigger (optional, every MCP client)
 
-To make fittok fire on **every** codebase question — without naming it — add
-this one line to your client's instructions file:
+To make fittok fire on **every** codebase question — without naming it — **and**
+stop your client from re-reading files fittok already returned (which would
+discard the savings), add this one line to your client's instructions file:
 
-> *"For any codebase question, call fittok first and answer from its output."*
+> *"For any codebase question, call fittok first and answer from its output —
+> don't re-read files it already returned code from."*
+
+The first half triggers fittok; the second keeps the client from opening the
+same files afterward. They reinforce each other — one shapes *strategy* (use
+fittok), the other stops the *double-read*. For a stronger, more explicit block:
+
+> For any codebase question ("how does X work", "where is Y"):
+> 1. Call the fittok MCP tool first, once.
+> 2. Answer directly from its `optimized_context` — it is the real, authoritative
+>    source for that question.
+> 3. Do NOT read or grep the files fittok already returned code from. That
+>    discards the token savings fittok exists to provide.
+
+For the strongest effect, put it in your **user-global** instructions so it
+applies to every repo, not just one:
 
 | Client | Instructions file |
 |---|---|
-| Claude Code | `CLAUDE.md` |
-| GitHub Copilot | `.github/copilot-instructions.md` |
+| Claude Code | `CLAUDE.md` (repo) or `~/.claude/CLAUDE.md` (user-global) |
+| GitHub Copilot | `.github/copilot-instructions.md` or Copilot user instructions |
 | Cursor | `.cursor/rules/*.mdc` (or `.cursorrules`) |
 | Windsurf | `.windsurfrules` |
+
+> fittok also bakes this rule into every response (an "answer from this, don't
+> re-read" line above the code), so it works even without the snippet above —
+> the snippet just makes it the client's default across all questions.
 
 ### CLI
 

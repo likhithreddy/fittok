@@ -117,6 +117,19 @@ _QUERY_TEMPLATES: dict[str, list[tuple[NodeType, str]]] = {
 }
 
 
+# Top-level statement types that bind a name to a value (module-scope constants).
+# Captured as CONSTANT nodes so a referenced constant (MODEL_NAME, API_URL, …)
+# can be surfaced as a dependency instead of forcing a file re-read. JS/TS
+# declarators whose value is a function/arrow/class are skipped here — they are
+# already captured as FUNCTION/CLASS nodes by the templates above.
+_CONST_STMT_TYPES: dict[str, set[str]] = {
+    "python": {"assignment"},
+    "javascript": {"lexical_declaration", "variable_declaration"},
+    "typescript": {"lexical_declaration", "variable_declaration"},
+    "tsx": {"lexical_declaration", "variable_declaration"},
+}
+
+
 # ── Language / parser setup ───────────────────────────────────────────────────
 
 def _get_language(lang_name: str) -> Optional[Language]:
@@ -436,6 +449,62 @@ def parse_file(filepath: Path, root: Path) -> tuple[list[GraphNode], list[GraphE
                     target=call_name,  # placeholder, resolved later
                     type=EdgeType.CALLS,
                 ))
+
+    # Module-level assignments → CONSTANT nodes (e.g. ``MODEL_NAME = "..."``).
+    # Top-level ONLY (direct children of the module root): locals inside a
+    # function/class body are retrieval noise. Making these first-class nodes is
+    # what lets the optimizer return a referenced constant as a dependency
+    # instead of leaving the model to re-open the file to see it.
+    const_stmt_types = _CONST_STMT_TYPES.get(lang_name)
+    if const_stmt_types:
+        for child in tree.root_node.children:
+            # Top-level statements only. Python wraps assignments in an
+            # expression_statement node (grammar-version dependent); JS/TS
+            # lexical/variable declarations are direct statements. Locals inside
+            # function/class bodies live deeper (block > …) and are never reached.
+            stmts = child.children if child.type == "expression_statement" else [child]
+            for stmt in stmts:
+                if stmt.type not in const_stmt_types:
+                    continue
+                # Build (name, content-bearing node) pairs for this statement.
+                if lang_name == "python":
+                    left = stmt.child_by_field_name("left")
+                    if left is None or left.type != "identifier":
+                        continue  # skip tuple unpacking, attribute/index targets
+                    pairs = [(_decode(left, source_bytes), stmt)]
+                else:  # JS/TS: one or more variable_declarator children
+                    pairs = []
+                    for dec in stmt.children:
+                        if dec.type != "variable_declarator":
+                            continue
+                        nm = dec.child_by_field_name("name")
+                        if nm is None or nm.type != "identifier":
+                            continue
+                        val = dec.child_by_field_name("value")
+                        if val is not None and val.type in (
+                            "arrow_function", "function", "function_expression",
+                            "class", "class_declaration",
+                        ):
+                            continue  # already captured as a FUNCTION/CLASS node
+                        pairs.append((_decode(nm, source_bytes), dec))
+                for name, content_node in pairs:
+                    if not name or name.startswith("_"):
+                        continue  # skip private / dunder throwaways
+                    content = _safe_content(source_bytes, content_node)
+                    node_id = f"{NodeType.CONSTANT.value}:{rel_path}:{name}:{content_node.start_point[0]}"
+                    const_node = GraphNode(
+                        id=node_id,
+                        type=NodeType.CONSTANT,
+                        name=name,
+                        file=rel_path,
+                        line_start=content_node.start_point[0] + 1,
+                        line_end=content_node.end_point[0] + 1,
+                        content=content,
+                        token_count=count_tokens(content),
+                    )
+                    nodes.append(const_node)
+                    definitions[name] = const_node
+                    edges.append(GraphEdge(source=file_id, target=node_id, type=EdgeType.CONTAINS))
 
     # Import edges (placeholders)
     for imp in import_targets:

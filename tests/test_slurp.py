@@ -17,6 +17,7 @@ from fittok.slurp import (
     query_graph,
     _compute_combined_scores,
     _select_nodes,
+    _select_neighbors,
     format_subgraph,
 )
 
@@ -181,3 +182,87 @@ class TestQueryGraph:
         md, count, tokens = query_graph(graph, "anything", 4000)
         assert count == 0
         assert "No nodes" in md
+
+
+class TestNeighborExpansion:
+    """The core fix for the re-read problem: definitions referenced by selected
+    code (a constant like MODEL_NAME, or a called helper) are surfaced as
+    compact dependencies, exempt from the relevance cliff but token-capped."""
+
+    @pytest.fixture
+    def match_graph(self):
+        nodes = [
+            GraphNode(
+                id="function:m.py:do_match:0", type=NodeType.FUNCTION, name="do_match",
+                file="m.py", line_start=1, line_end=5,
+                content="def do_match():\n    model = MODEL_NAME\n    return helper(model)",
+                token_count=20,
+            ),
+            GraphNode(
+                id="constant:m.py:MODEL_NAME:7", type=NodeType.CONSTANT, name="MODEL_NAME",
+                file="m.py", line_start=7, line_end=7,
+                content='MODEL_NAME = "llama-3.3-70b"', token_count=10,
+            ),
+            GraphNode(
+                id="function:m.py:helper:9", type=NodeType.FUNCTION, name="helper",
+                file="m.py", line_start=9, line_end=12,
+                content="def helper(x):\n    return x.strip()", token_count=12,
+            ),
+            GraphNode(  # defined but never referenced → must NOT be pulled in
+                id="function:m.py:unused:14", type=NodeType.FUNCTION, name="unused",
+                file="m.py", line_start=14, line_end=16,
+                content="def unused():\n    return 0", token_count=8,
+            ),
+        ]
+        return nodes
+
+    def test_pulls_in_referenced_constant_and_helper(self, match_graph):
+        selected = [match_graph[0]]
+        chosen, md = _select_neighbors(
+            selected, match_graph, token_cap=300,
+            selected_ids={selected[0].id},
+        )
+        names = {n.name for n in chosen}
+        assert "MODEL_NAME" in names       # the exact symbol that triggered the Copilot re-read
+        assert "helper" in names           # called function resolved by name
+        assert "unused" not in names       # not referenced → excluded
+        assert "Referenced dependencies" in md
+        assert "llama-3.3-70b" in md       # constant's value actually surfaced
+
+    def test_token_cap_bounds_output(self, match_graph):
+        selected = [match_graph[0]]
+        # Cap smaller than even the section header → nothing fits.
+        chosen, md = _select_neighbors(
+            selected, match_graph, token_cap=2,
+            selected_ids={selected[0].id},
+        )
+        assert chosen == []
+        assert md == ""
+
+    def test_respects_exclude_ids(self, match_graph):
+        """Previously-returned nodes (cross-call dedup) aren't re-sent."""
+        selected = [match_graph[0]]
+        chosen, _ = _select_neighbors(
+            selected, match_graph, token_cap=300,
+            selected_ids={selected[0].id},
+            exclude_ids={"constant:m.py:MODEL_NAME:7"},
+        )
+        names = {n.name for n in chosen}
+        assert "MODEL_NAME" not in names   # excluded
+        assert "helper" in names           # unaffected
+
+    def test_end_to_end_surfaces_dependencies(self, match_graph):
+        """Full query_graph path: a relevant function's referenced constant
+        lands in the output under 'Referenced dependencies'."""
+        graph = KnowledgeGraph(
+            nodes=match_graph,
+            edges=[
+                GraphEdge(source="file:m.py", target=n.id, type=EdgeType.CONTAINS)
+                for n in match_graph
+            ],
+            metadata=GraphMetadata(root="/test", total_nodes=4, total_edges=4),
+        )
+        md, _count, _tokens = query_graph(graph, "how does match work", 4000)
+        assert "do_match" in md
+        assert "Referenced dependencies" in md
+        assert "MODEL_NAME" in md

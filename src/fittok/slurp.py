@@ -7,6 +7,7 @@ then formats them as markdown within the specified token limit.
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 
 import numpy as np
@@ -249,6 +250,86 @@ def _select_nodes(
     return selected_nodes
 
 
+# ── Referenced-dependency expansion ──────────────────────────────────────────
+#
+# The re-read problem: a returned function often references a symbol whose own
+# definition was NOT query-relevant (below the relevance cliff) — a module
+# constant like MODEL_NAME, or a small helper. The model, staring at an undefined
+# name, used to re-open the file to see it, which discards the token savings.
+#
+# Fix: after selecting the query-relevant nodes, scan their content for
+# identifiers that resolve to *definition* nodes in the graph, and surface those
+# definitions as compact one-liners. Exempt from the relevance cliff (they're
+# structurally required, not semantically hit), but capped by a token sub-budget
+# so they can't re-bloat the output. Resolving by name (not by CALLS/REFERENCES
+# edges) also catches referenced constants, which carry no call edge.
+
+# Identifiers of length >= 2 (skips single-letter throwaway names). Word-boundary
+# anchored so it won't match inside longer tokens.
+_NEIGHBOR_IDENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{1,}\b")
+
+NEIGHBOR_MAX_TOKENS = 300      # absolute cap on the dependency section
+NEIGHBOR_BUDGET_FRACTION = 0.3  # …and never more than 30% of the response budget
+
+
+def _neighbor_line(node) -> str:
+    """One compact line for a referenced dependency: its declaration + location."""
+    sig = _node_signature(node.content)
+    return f"- `{sig}` ({node.file}:{node.line_start})"
+
+
+def _select_neighbors(
+    selected: list,
+    all_nodes: list,
+    token_cap: int,
+    selected_ids: set,
+    exclude_ids: set | None = None,
+):
+    """Return ``(neighbor_nodes, markdown)`` for definitions referenced by
+    *selected* but not already included.
+
+    Names are resolved against the graph's definition nodes (FUNCTION, METHOD,
+    CLASS, CONSTANT) by name. Order is by reference frequency (most-used first),
+    so the most important dependencies win when the cap is tight.
+    """
+    if token_cap <= 0 or not selected:
+        return [], ""
+
+    name_index: dict[str, object] = {}
+    for n in all_nodes:
+        if n.type in (NodeType.FILE, NodeType.IMPORT):
+            continue
+        name_index.setdefault(n.name, n)  # first definition wins
+
+    excluded = set(exclude_ids or ()) | set(selected_ids)
+    refcount: dict[str, int] = defaultdict(int)
+    for n in selected:
+        for ident in _NEIGHBOR_IDENT_RE.findall(n.content or ""):
+            if ident in name_index:
+                refcount[ident] += 1
+
+    header = "\n\n## Referenced dependencies\n"
+    chosen: list = []
+    lines: list[str] = []
+    total = count_tokens(header)
+    for name, _cnt in sorted(refcount.items(), key=lambda kv: (-kv[1], kv[0])):
+        node = name_index[name]
+        if node.id in excluded:
+            continue
+        line = _neighbor_line(node)
+        line_tokens = count_tokens(line) + 1  # +1 for the joining newline
+        if total + line_tokens > token_cap:
+            continue  # doesn't fit; a later, smaller one still might
+        chosen.append(node)
+        lines.append(line)
+        total += line_tokens
+        excluded.add(node.id)  # don't add the same node twice under aliased names
+
+    if not chosen:
+        return [], ""
+    return chosen, header + "\n".join(lines)
+
+
 # ── Markdown formatting ──────────────────────────────────────────────────────
 
 _LANG_FROM_EXT = {
@@ -460,7 +541,24 @@ def query_graph(
                     "confidence": confidence, "confidence_label": "low"}
         return md, 0, 0
 
-    markdown = format_subgraph(selected, effective_budget)
+    main_md = format_subgraph(selected, effective_budget)
+    main_tokens = count_tokens(main_md)
+
+    # Referenced-dependency expansion: surface definitions (constants, helpers)
+    # that the selected code USES but that weren't themselves query-relevant
+    # (below the cliff). This is the fix for the re-read problem — without it,
+    # the model used to re-open the file to resolve an undefined MODEL_NAME.
+    # Capped to a fraction of the budget, with headroom for the low-conf banner.
+    neighbor_cap = max(0, min(
+        NEIGHBOR_MAX_TOKENS,
+        effective_budget - main_tokens - 64,
+        int(effective_budget * NEIGHBOR_BUDGET_FRACTION),
+    ))
+    neighbor_nodes, deps_md = _select_neighbors(
+        selected, graph.nodes, neighbor_cap,
+        selected_ids={n.id for n in selected}, exclude_ids=exclude_ids,
+    )
+    markdown = main_md + deps_md
 
     # Low-confidence note: keep it informational and do NOT tell the model to go
     # read files — that would defeat the token savings. The most relevant code
@@ -483,6 +581,7 @@ def query_graph(
         return {
             "markdown": markdown,
             "selected_nodes": len(selected),
+            "neighbor_nodes": len(neighbor_nodes),
             "tokens_used": tokens_used,
             "budget": effective_budget,
             "budget_mode": "adaptive" if token_budget <= 0 else "explicit",
@@ -492,6 +591,7 @@ def query_graph(
             "top_nodes": top_nodes,
             "files": sorted({n.file for n in selected}),
             "selected_ids": [n.id for n in selected],
+            "neighbor_ids": [n.id for n in neighbor_nodes],
         }
 
     return markdown, len(selected), tokens_used

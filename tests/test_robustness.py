@@ -28,10 +28,14 @@ def test_arrow_function_component_gets_real_name():
 
 
 def test_file_without_definitions_is_indexed():
-    """A file that yields no functions/classes must still be represented."""
+    """A file that yields no functions/classes/constants must still be
+    represented via its body fallback. (Assignment-only files no longer hit
+    this path — they now produce real CONSTANT nodes, which is strictly better
+    and covered by test_module_level_constants_become_nodes.)"""
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
-        _write(d, "config.py", "API_URL = 'https://example.com'\nTIMEOUT = 30\n")
+        # A comment + bare call: nothing extractable into a node.
+        _write(d, "notes.py", "# just a comment\nprint('bootstrapping')\n")
         graph = parse_codebase(str(d))
         file_nodes = [n for n in graph.nodes if n.type == NodeType.FILE]
         assert file_nodes, "no file node created"

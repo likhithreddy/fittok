@@ -18,6 +18,9 @@ class NodeType(str, Enum):
     MODULE = "module"
     METHOD = "method"
     IMPORT = "import"
+    # Module-level assignments (e.g. ``MODEL_NAME = "..."``). Made first-class so
+    # the optimizer can surface a referenced constant instead of forcing a re-read.
+    CONSTANT = "constant"
 
 
 class EdgeType(str, Enum):

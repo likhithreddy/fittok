@@ -135,6 +135,57 @@ class TestParseCodebase:
         files = [n.file for n in graph.nodes]
         assert not any("node_modules" in f for f in files)
 
+    def test_module_level_constants_become_nodes(self, tmp_path):
+        """Module-level assignments become CONSTANT nodes so the optimizer can
+        surface a referenced constant (e.g. MODEL_NAME) as a dependency instead
+        of forcing a re-read of the file to see its value."""
+        (tmp_path / "config.py").write_text(
+            'MODEL_NAME = "llama-3.3-70b"\n'
+            'API_URL = "https://api.example.com"\n'
+            '_PRIVATE = "should be skipped"\n'   # underscore-prefixed → filtered
+            '\n'
+            'def use_model():\n'
+            '    local = "not a node"\n'          # function-local → NOT captured
+            '    return MODEL_NAME\n'
+        )
+        graph = parse_codebase(str(tmp_path))
+
+        consts = {n.name: n for n in graph.nodes if n.type == NodeType.CONSTANT}
+        assert "MODEL_NAME" in consts
+        assert "llama-3.3-70b" in consts["MODEL_NAME"].content
+        assert "API_URL" in consts
+        assert "_PRIVATE" not in consts          # private throwaway filtered out
+        assert "local" not in consts             # locals inside functions excluded
+
+        # Each constant gets a CONTAINS edge from its file, so it participates in
+        # the graph's structure (PageRank / adjacency), not just text search.
+        const_ids = {c.id for c in consts.values()}
+        contains_targets = {
+            e.target for e in graph.edges
+            if e.type == EdgeType.CONTAINS and e.target in const_ids
+        }
+        assert contains_targets == const_ids
+
+    def test_js_module_constants_become_nodes(self, tmp_path):
+        """JS/TS module-level const/let bindings become CONSTANT nodes — but a
+        const holding an arrow/function (already a FUNCTION node) is NOT also
+        duplicated as a constant."""
+        (tmp_path / "cfg.js").write_text(
+            'const MODEL_NAME = "llama";\n'
+            'let timeout = 30;\n'
+            'const Handler = () => null;\n'   # arrow → FUNCTION node, not CONSTANT
+            'function run() { return MODEL_NAME; }\n'
+        )
+        graph = parse_codebase(str(tmp_path))
+        consts = {n.name: n for n in graph.nodes if n.type == NodeType.CONSTANT}
+        assert "MODEL_NAME" in consts
+        assert "llama" in consts["MODEL_NAME"].content
+        assert "timeout" in consts
+        assert "Handler" not in consts        # function-valued → not duplicated as constant
+
+        func_names = {n.name for n in graph.nodes if n.type == NodeType.FUNCTION}
+        assert "Handler" in func_names        # …captured once, as a function
+
 
 class TestSaveLoadGraph:
     def test_save_and_load(self, sample_python_project, tmp_path):
