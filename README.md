@@ -179,6 +179,22 @@ print(result["optimized_context"])   # the relevant code slice
 print(result["savings"])             # token reduction stats
 ```
 
+### Upgrading
+
+`uvx` caches the environment, so a new `fittok` release isn't picked up
+automatically — server restarts reuse the cached version. Upgrade with one
+command (no need to re-register the MCP server):
+
+```bash
+uvx --refresh fittok        # re-resolve from PyPI → latest version
+```
+
+Then restart the MCP server (reload the window in VS Code, or restart the
+Copilot CLI) so it boots the new version. For other runtimes:
+
+- **pip:** `python -m pip install --upgrade fittok`
+- **pipx:** `pipx upgrade fittok`
+
 ---
 
 ## Token savings — honest numbers
