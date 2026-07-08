@@ -16,3 +16,6 @@ graph.json
 venv/
 .env
 *.so
+
+# local publishing cheat sheet (not shipped)
+PUBLISHING.md
