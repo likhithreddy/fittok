@@ -83,17 +83,30 @@ class WatcherState:
         """Periodically flush changed files into the graph."""
         while not self._stop_event.is_set():
             self._stop_event.wait(timeout=2.0)
-            with self._lock:
-                changed = list(self._changed_files)
-                self._changed_files.clear()
+            self.flush()
 
-            if changed:
-                try:
-                    self.graph = _update_graph(self.graph, self.root_path, changed)
-                    logger.info("Updated graph: %d changed files, now %d nodes",
-                                len(changed), len(self.graph.nodes))
-                except Exception:
-                    logger.warning("Failed to update graph", exc_info=True)
+    def flush(self) -> bool:
+        """Process any pending changes immediately.
+
+        Returns True if the graph was updated. Called by the background flush
+        loop AND by the query path (via ``_live_graph``) so a query sees the
+        latest edits without waiting for the 2s tick. The lock makes it safe
+        to call from both threads — only one drains the pending set.
+        """
+        with self._lock:
+            changed = list(self._changed_files)
+            self._changed_files.clear()
+
+        if not changed:
+            return False
+        try:
+            self.graph = _update_graph(self.graph, self.root_path, changed)
+            logger.info("Updated graph: %d changed files, now %d nodes",
+                        len(changed), len(self.graph.nodes))
+            return True
+        except Exception:
+            logger.warning("Failed to update graph", exc_info=True)
+            return False
 
     def get_stats(self) -> dict:
         """Return watcher statistics."""

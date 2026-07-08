@@ -30,8 +30,11 @@ codebase ──▶ graphify ──▶ slurp ──▶ readable slice ──▶ L
    top-ranked in full and the supporting tail as signatures, trimmed to a budget.
    The model answers directly from it.
 
-Graphs and embeddings are cached on disk (`~/.cache/fittok`), keyed by content —
-so after a code change only the changed functions re-embed.
+As you edit, a file watcher (auto-started on first query) updates the graph
+**incrementally** — only changed files are re-parsed and merged, and only
+changed functions re-embed. Graphs and embeddings are cached on disk
+(`~/.cache/fittok`). Set `FITTOK_AUTOWATCH=false` to disable the watcher, in
+which case an edit triggers a full re-parse on the next query.
 
 ---
 
@@ -220,6 +223,7 @@ with it** — because fittok replaced a 58k-token Explore subagent with one tool
 | `ANTHROPIC_API_KEY` | — | Enables LLM answers via `claude-haiku-4-5` |
 | `OPENAI_API_KEY` | — | Fallback LLM via `gpt-4o-mini` |
 | `FITTOK_SHOW_SAVINGS` | `true` | `🪙 saved X%` footer on MCP answers; set `false` to disable |
+| `FITTOK_AUTOWATCH` | `true` | Auto-start the file watcher so graph updates are incremental (only changed files re-parse); set `false` to fall back to full re-parse on edits |
 | `FITTOK_EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
 | `FITTOK_DEVICE` | `auto` | `auto` / `cuda` / `mps` / `cpu` |
 | `FITTOK_CACHE_DIR` | `~/.cache/fittok` | Cache location |

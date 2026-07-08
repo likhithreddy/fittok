@@ -52,7 +52,7 @@ from .pii_scrubber import (
     scrub_graph_content,
 )
 from .slurp import query_graph as _query_graph
-from .watcher import start_watch, stop_watch
+from .watcher import start_watch, stop_watch, get_watcher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +77,11 @@ SCRUB_ENABLED = os.environ.get("FITTOK_SCRUB", "false").lower() in ("true", "1",
 # When on, the tool asks the model to surface a one-line savings footer to the
 # user. Default on — set FITTOK_SHOW_SAVINGS=false to disable.
 SHOW_SAVINGS = os.environ.get("FITTOK_SHOW_SAVINGS", "true").lower() not in ("false", "0", "no")
+# Auto-start the file watcher for any codebase fittok parses/queries, so graph
+# updates are incremental (only changed files re-parsed & merged, not a full
+# re-parse). Default on — set FITTOK_AUTOWATCH=false to disable (e.g. where
+# background file watching is undesirable).
+AUTOWATCH_ENABLED = os.environ.get("FITTOK_AUTOWATCH", "true").lower() in ("true", "1", "yes")
 
 
 def _graph_output_path(resolved: Path) -> str:
@@ -88,6 +93,36 @@ def _graph_output_path(resolved: Path) -> str:
     os.makedirs(graphs_dir, exist_ok=True)
     key = hashlib.sha256(str(resolved).encode()).hexdigest()[:16]
     return os.path.join(graphs_dir, f"{resolved.name}-{key}.json")
+
+
+def _live_graph(resolved: Path):
+    """Return the watcher's live, incrementally-updated graph for this path
+    (flushing any pending edits first), or None if no active watcher.
+
+    When a watcher is active, queries use this live graph directly instead of
+    the mtime-keyed cache — so an edit does NOT trigger a full re-parse; the
+    watcher has already merged only the changed files.
+    """
+    if not AUTOWATCH_ENABLED:
+        return None
+    state = get_watcher(str(resolved))
+    if state is None or state.observer is None or not state.observer.is_alive():
+        return None
+    state.flush()
+    return state.graph
+
+
+def _ensure_watching(root_path: str, graph) -> None:
+    """Best-effort auto-start the watcher for a codebase so future edits update
+    the graph incrementally. Idempotent (no-op if already watching or disabled).
+    """
+    if not AUTOWATCH_ENABLED:
+        return
+    try:
+        if get_watcher(root_path) is None:
+            start_watch(root_path, graph)
+    except Exception as exc:
+        logger.warning("Auto-watch failed for %s: %s", root_path, exc)
 
 
 # ── v0.1.0 Tools ─────────────────────────────────────────────────────────────
@@ -105,6 +140,7 @@ def parse_codebase_tool(path: str) -> dict:
     if cached is not None:
         output_path = _graph_output_path(resolved)
         save_graph(cached, output_path)
+        _ensure_watching(str(resolved), cached)
         return {
             "graph_json_path": output_path,
             "total_nodes": cached.metadata.total_nodes,
@@ -118,6 +154,7 @@ def parse_codebase_tool(path: str) -> dict:
     output_path = _graph_output_path(resolved)
     graph_json_path = save_graph(graph, output_path)
     set_cached_graph(str(resolved), graph)
+    _ensure_watching(str(resolved), graph)
 
     return {
         "graph_json_path": graph_json_path,
@@ -201,22 +238,31 @@ def optimize_context_tool(
     if not resolved.is_dir():
         return {"error": f"Not a directory: {codebase_path}"}
 
-    # Stage 1: Parse (with cache)
-    graph = get_cached_graph(str(resolved))
+    # Stage 1: Parse. Prefer the watcher's live (incrementally-updated) graph
+    # when one is active; otherwise the mtime-keyed cache; else full parse.
+    graph = _live_graph(resolved)
     if graph is not None:
         graph_stats = {"total_nodes": graph.metadata.total_nodes,
-                       "total_edges": graph.metadata.total_edges, "cached": True}
+                       "total_edges": graph.metadata.total_edges, "watched": True}
     else:
-        try:
-            graph = parse_codebase(str(resolved))
-            if SCRUB_ENABLED:
-                scrub_graph_content(graph)
-            save_graph(graph, _graph_output_path(resolved))
+        graph = get_cached_graph(str(resolved))
+        if graph is not None:
             graph_stats = {"total_nodes": graph.metadata.total_nodes,
-                           "total_edges": graph.metadata.total_edges}
-            set_cached_graph(str(resolved), graph)
-        except Exception as e:
-            return {"error": f"Parse failed: {e}"}
+                           "total_edges": graph.metadata.total_edges, "cached": True}
+        else:
+            try:
+                graph = parse_codebase(str(resolved))
+                if SCRUB_ENABLED:
+                    scrub_graph_content(graph)
+                save_graph(graph, _graph_output_path(resolved))
+                graph_stats = {"total_nodes": graph.metadata.total_nodes,
+                               "total_edges": graph.metadata.total_edges}
+                set_cached_graph(str(resolved), graph)
+            except Exception as e:
+                return {"error": f"Parse failed: {e}"}
+        # Auto-start the watcher so subsequent edits update the graph
+        # incrementally instead of triggering a full re-parse on the next call.
+        _ensure_watching(str(resolved), graph)
 
     # Stage 2: Select readable relevant code within the budget.
     # Selection IS the compression — we return real source (trimmed to budget),
