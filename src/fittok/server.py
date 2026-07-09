@@ -708,6 +708,81 @@ def reset_graph_tool(path: str) -> dict:
     }
 
 
+@mcp.tool()
+def show_graph_tool(path: str, query: str = "") -> dict:
+    """Open an INTERACTIVE BROWSER visualization of the codebase knowledge graph.
+
+    ⚠️ Call this ONLY when the user EXPLICITLY asks to SEE / VISUALIZE / SHOW /
+    DRAW the graph — e.g. "show me the knowledge graph", "visualize this
+    codebase", "draw the call graph". Do NOT call it for ordinary codebase
+    questions; use `optimize_context` for those. This opens a browser tab on the
+    user's machine (the server runs locally) and returns a short confirmation —
+    it does NOT return source code to answer from. Optional `query` highlights
+    the most relevant nodes.
+    """
+    import webbrowser
+    from .graph_viz import build_graph_html
+
+    logger.info("show_graph: %s (query=%r)", path, query[:80] if query else "")
+
+    resolved = Path(path).resolve()
+    if not resolved.is_dir():
+        return {"error": f"Not a directory: {path}"}
+
+    # Prefer the watcher's live graph; else cache; else full parse (+ auto-watch).
+    graph = _live_graph(resolved)
+    src = "watched"
+    if graph is None:
+        graph = get_cached_graph(str(resolved))
+        if graph is not None:
+            src = "cached"
+        else:
+            try:
+                graph = parse_codebase(str(resolved))
+                if SCRUB_ENABLED:
+                    scrub_graph_content(graph)
+                save_graph(graph, _graph_output_path(resolved))
+                set_cached_graph(str(resolved), graph)
+                src = "parsed"
+            except Exception as e:
+                return {"error": f"Parse failed: {e}"}
+        _ensure_watching(str(resolved), graph)
+
+    highlight_ids: set[str] = set()
+    if query:
+        from .slurp import score_nodes
+        scores = score_nodes(graph, query)
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        cutoff = max(10, len(sorted_scores) // 20)
+        highlight_ids = {nid for nid, _ in sorted_scores[:cutoff]}
+
+    try:
+        out_path = build_graph_html(graph, str(resolved), highlight_ids, query or None)
+    except ImportError:
+        return {"error": "pyvis not installed. Install with: uv pip install 'fittok[ui]'"}
+    except Exception as e:
+        return {"error": f"Graph render failed: {e}"}
+
+    try:
+        webbrowser.open(f"file://{out_path}")
+        opened = True
+    except Exception:
+        opened = False
+
+    note = "Interactive graph opened in your browser."
+    if query:
+        note += f" {len(highlight_ids)} nodes highlighted for the query."
+    return {
+        "opened_in_browser": opened,
+        "graph_html_path": out_path,
+        "total_nodes": graph.metadata.total_nodes,
+        "total_edges": graph.metadata.total_edges,
+        "highlighted_nodes": len(highlight_ids),
+        "graph_source": src,
+        "note": note,
+    }
+
+
 # ── v0.2.0: Graph Diffing ────────────────────────────────────────────────────
 
 @mcp.tool()
