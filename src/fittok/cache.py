@@ -53,28 +53,61 @@ def _hash_str(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
+# Debounce: the mtime walk is O(files) and runs on every get/set_cached_graph.
+# Reuse the last hash for a root within a short window — edits are batched by
+# the watcher's 2s tick anyway, so a sub-second-stale hash is fine.
+# Note: with autowatch on (default), _resolve_graph prefers the watcher's live
+# graph and bypasses this cache, so the stale window only bites when autowatch
+# is off or the watcher has stopped.
+_MTIME_HASH_TTL = 2.0
+_mtime_hash_cache: dict[str, tuple[float, str]] = {}
+
+
 def _hash_mtimes(root_path: str) -> str:
-    """Hash of all code file mtimes under root_path."""
-    from .graphify import _EXT_TO_LANG
+    """Hash of all code-file mtimes under root_path.
+
+    Reuses the parser's skip-set and generated-file filter (single source of
+    truth in graphify) so the key reflects exactly what gets parsed — otherwise
+    churn in build/coverage/node_modules dirs would cause spurious cache misses.
+    """
+    import time as _time
+    now = _time.monotonic()
+    hit = _mtime_hash_cache.get(root_path)
+    if hit and (now - hit[0]) < _MTIME_HASH_TTL:
+        return hit[1]
+
+    from .graphify import _EXT_TO_LANG, _SKIP_DIRS, _is_generated_file
     mtimes: list[str] = []
     root = Path(root_path).resolve()
     if not root.is_dir():
-        return _hash_str(root_path)
-    skip_dirs = {
-        "node_modules", ".git", "__pycache__", ".venv", "venv",
-        "dist", "build", ".tox", ".mypy_cache", ".pytest_cache",
-        ".next", ".nuxt", "target", "vendor", ".gradle",
-    }
+        h = _hash_str(root_path)
+        _mtime_hash_cache[root_path] = (now, h)
+        return h
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
         for f in sorted(filenames):
             p = Path(dirpath) / f
-            if p.suffix in _EXT_TO_LANG:
+            if p.suffix in _EXT_TO_LANG and not _is_generated_file(p):
                 try:
                     mtimes.append(f"{p.relative_to(root)}:{p.stat().st_mtime}")
                 except OSError:
                     pass
-    return _hash_str("|".join(mtimes))
+    h = _hash_str("|".join(mtimes))
+    _mtime_hash_cache[root_path] = (now, h)
+    return h
+
+
+def graph_output_path(resolved_path) -> str:
+    """On-disk path for a codebase's graph.json — under the cache dir, NEVER in
+    the user's repo (writing graph.json into their codebase pollutes it and can
+    get committed). Shared by the server tools AND the watcher so the watcher's
+    incremental write-back lands exactly where the file-based tools read.
+    """
+    graphs_dir = os.path.join(CACHE_DIR, "graphs")
+    os.makedirs(graphs_dir, exist_ok=True)
+    digest = hashlib.sha256(str(resolved_path).encode()).hexdigest()[:16]
+    name = Path(str(resolved_path)).name or "graph"
+    return os.path.join(graphs_dir, f"{name}-{digest}.json")
 
 
 # ── Graph cache ───────────────────────────────────────────────────────────────
@@ -106,12 +139,13 @@ def set_cached_graph(root_path: str, graph: Any) -> None:
 
 # ── Query cache ──────────────────────────────────────────────────────────────
 
-def get_cached_query(graph_path: str, query: str, token_budget: int) -> Optional[dict]:
-    """Look up a cached query result."""
+def get_cached_query(graph_path: str, query: str, token_budget: int, graph_version: str = "") -> Optional[dict]:
+    """Look up a cached query result. graph_version ties the entry to a specific
+    graph revision so stale subgraphs aren't returned after the graph changes."""
     cache = _get_cache()
     if cache is None:
         return None
-    key = f"query:{graph_path}:{_hash_str(query)}:{token_budget}"
+    key = f"query:{graph_path}:{_hash_str(query)}:{token_budget}:{graph_version}"
     result = cache.get(key)
     if result is not None:
         _stats["query_hits"] += 1
@@ -121,23 +155,23 @@ def get_cached_query(graph_path: str, query: str, token_budget: int) -> Optional
     return None
 
 
-def set_cached_query(graph_path: str, query: str, token_budget: int, result: dict) -> None:
+def set_cached_query(graph_path: str, query: str, token_budget: int, result: dict, graph_version: str = "") -> None:
     """Store a query result in cache."""
     cache = _get_cache()
     if cache is None:
         return
-    key = f"query:{graph_path}:{_hash_str(query)}:{token_budget}"
+    key = f"query:{graph_path}:{_hash_str(query)}:{token_budget}:{graph_version}"
     cache.set(key, result, expire=3600)  # 1h TTL
 
 
 # ── Compression cache ────────────────────────────────────────────────────────
 
-def get_cached_compression(context: str, question: str, target_tokens: int) -> Optional[dict]:
+def get_cached_compression(context: str, question: str, target_tokens: int, rate: float | None = None) -> Optional[dict]:
     """Look up a cached compression result."""
     cache = _get_cache()
     if cache is None:
         return None
-    key = f"compress:{_hash_str(context)}:{_hash_str(question)}:{target_tokens}"
+    key = f"compress:{_hash_str(context)}:{_hash_str(question)}:{target_tokens}:{rate}"
     result = cache.get(key)
     if result is not None:
         _stats["compression_hits"] += 1
@@ -147,12 +181,12 @@ def get_cached_compression(context: str, question: str, target_tokens: int) -> O
     return None
 
 
-def set_cached_compression(context: str, question: str, target_tokens: int, result: dict) -> None:
+def set_cached_compression(context: str, question: str, target_tokens: int, result: dict, rate: float | None = None) -> None:
     """Store a compression result in cache."""
     cache = _get_cache()
     if cache is None:
         return
-    key = f"compress:{_hash_str(context)}:{_hash_str(question)}:{target_tokens}"
+    key = f"compress:{_hash_str(context)}:{_hash_str(question)}:{target_tokens}:{rate}"
     cache.set(key, result, expire=3600)
 
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
@@ -85,14 +86,10 @@ AUTOWATCH_ENABLED = os.environ.get("FITTOK_AUTOWATCH", "true").lower() in ("true
 
 
 def _graph_output_path(resolved: Path) -> str:
-    """Path for the on-disk graph.json — kept under the cache dir, NEVER inside
-    the user's analyzed project (writing a multi-MB graph.json into their repo
-    pollutes it and can get committed)."""
-    import hashlib
-    graphs_dir = os.path.join(CACHE_DIR, "graphs")
-    os.makedirs(graphs_dir, exist_ok=True)
-    key = hashlib.sha256(str(resolved).encode()).hexdigest()[:16]
-    return os.path.join(graphs_dir, f"{resolved.name}-{key}.json")
+    """On-disk graph.json path. Delegates to ``cache.graph_output_path`` (the
+    single implementation, shared with the watcher) so the two never diverge."""
+    from .cache import graph_output_path
+    return graph_output_path(resolved)
 
 
 def _live_graph(resolved: Path):
@@ -123,6 +120,28 @@ def _ensure_watching(root_path: str, graph) -> None:
             start_watch(root_path, graph)
     except Exception as exc:
         logger.warning("Auto-watch failed for %s: %s", root_path, exc)
+
+
+def _resolve_graph(resolved: Path):
+    """Acquire the current graph for a codebase via ONE path used by every tool:
+    watcher live graph → mtime-keyed cache → full parse. Auto-starts the watcher
+    so future edits update incrementally. Returns (graph, graph_stats) and lets
+    parse errors propagate so each caller can format them.
+    """
+    graph = _live_graph(resolved)
+    if graph is not None:
+        return graph, {"total_nodes": graph.metadata.total_nodes,
+                       "total_edges": graph.metadata.total_edges, "watched": True}
+    graph = get_cached_graph(str(resolved))
+    if graph is None:
+        graph = parse_codebase(str(resolved))
+        if SCRUB_ENABLED:
+            scrub_graph_content(graph)
+        save_graph(graph, _graph_output_path(resolved))
+        set_cached_graph(str(resolved), graph)
+    _ensure_watching(str(resolved), graph)
+    return graph, {"total_nodes": graph.metadata.total_nodes,
+                   "total_edges": graph.metadata.total_edges, "cached": True}
 
 
 # ── v0.1.0 Tools ─────────────────────────────────────────────────────────────
@@ -165,25 +184,49 @@ def parse_codebase_tool(path: str) -> dict:
 
 @mcp.tool()
 def query_graph_tool(
-    graph_path: str,
-    query: str,
+    graph_path: str = "",
+    query: str = "",
     token_budget: int = 4000,
+    codebase_path: str = "",
 ) -> dict:
-    """Query a knowledge graph for the most relevant subgraph within a token budget."""
-    logger.info("query_graph: %s (query=%r, budget=%d)", graph_path, query[:80], token_budget)
+    """Query a knowledge graph for the most relevant subgraph within a token budget.
 
-    if not os.path.isfile(graph_path):
-        return {"error": f"Graph file not found: {graph_path}"}
+    Prefer ``codebase_path`` (a directory) — it uses the live, incrementally
+    updated graph. ``graph_path`` (a saved graph.json) is kept as a fallback.
+    """
+    logger.info("query_graph: codebase=%r graph=%r (query=%r, budget=%d)",
+                codebase_path, graph_path, query[:80], token_budget)
 
-    # Check cache
-    cached = get_cached_query(graph_path, query, token_budget)
+    graph = None
+    version = ""
+    cache_key = ""
+    if codebase_path:
+        resolved = Path(codebase_path).resolve()
+        if not resolved.is_dir():
+            return {"error": f"Not a directory: {codebase_path}"}
+        try:
+            graph, _gs = _resolve_graph(resolved)
+        except Exception as e:
+            return {"error": f"Parse failed: {e}"}
+        version = graph.metadata.generated_at
+        cache_key = f"live:{resolved}"
+    else:
+        if not graph_path or not os.path.isfile(graph_path):
+            return {"error": f"Graph file not found: {graph_path}"}
+        try:
+            graph = load_graph(graph_path)
+        except Exception as e:
+            return {"error": f"Failed to load graph: {e}"}
+        try:
+            version = str(os.path.getmtime(graph_path))
+        except OSError:
+            version = ""
+        cache_key = graph_path
+
+    # Versioned by graph revision so stale subgraphs aren't returned after edits.
+    cached = get_cached_query(cache_key, query, token_budget, graph_version=version)
     if cached is not None:
         return {**cached, "cached": True}
-
-    try:
-        graph = load_graph(graph_path)
-    except Exception as e:
-        return {"error": f"Failed to load graph: {e}"}
 
     markdown, node_count, tokens_used = _query_graph(graph, query, token_budget)
     result = {
@@ -191,7 +234,7 @@ def query_graph_tool(
         "selected_node_count": node_count,
         "tokens_used": tokens_used,
     }
-    set_cached_query(graph_path, query, token_budget, result)
+    set_cached_query(cache_key, query, token_budget, result, graph_version=version)
     return result
 
 
@@ -206,13 +249,13 @@ def compress_context_tool(
     logger.info("compress_context: %d chars -> %d tokens target", len(context), target_tokens)
 
     # Check cache
-    cached = get_cached_compression(context, question, target_tokens)
+    cached = get_cached_compression(context, question, target_tokens, rate=rate)
     if cached is not None:
         return {**cached, "cached": True}
 
     try:
         result = _compress(context=context, question=question, target_tokens=target_tokens, rate=rate)
-        set_cached_compression(context, question, target_tokens, result)
+        set_cached_compression(context, question, target_tokens, result, rate=rate)
         return result
     except Exception as e:
         return {"error": f"Compression failed: {e}"}
@@ -238,31 +281,11 @@ def optimize_context_tool(
     if not resolved.is_dir():
         return {"error": f"Not a directory: {codebase_path}"}
 
-    # Stage 1: Parse. Prefer the watcher's live (incrementally-updated) graph
-    # when one is active; otherwise the mtime-keyed cache; else full parse.
-    graph = _live_graph(resolved)
-    if graph is not None:
-        graph_stats = {"total_nodes": graph.metadata.total_nodes,
-                       "total_edges": graph.metadata.total_edges, "watched": True}
-    else:
-        graph = get_cached_graph(str(resolved))
-        if graph is not None:
-            graph_stats = {"total_nodes": graph.metadata.total_nodes,
-                           "total_edges": graph.metadata.total_edges, "cached": True}
-        else:
-            try:
-                graph = parse_codebase(str(resolved))
-                if SCRUB_ENABLED:
-                    scrub_graph_content(graph)
-                save_graph(graph, _graph_output_path(resolved))
-                graph_stats = {"total_nodes": graph.metadata.total_nodes,
-                               "total_edges": graph.metadata.total_edges}
-                set_cached_graph(str(resolved), graph)
-            except Exception as e:
-                return {"error": f"Parse failed: {e}"}
-        # Auto-start the watcher so subsequent edits update the graph
-        # incrementally instead of triggering a full re-parse on the next call.
-        _ensure_watching(str(resolved), graph)
+    # Stage 1: Parse — one shared resolver (live watcher graph → cache → parse).
+    try:
+        graph, graph_stats = _resolve_graph(resolved)
+    except Exception as e:
+        return {"error": f"Parse failed: {e}"}
 
     # Stage 2: Select readable relevant code within the budget.
     # Selection IS the compression — we return real source (trimmed to budget),
@@ -300,17 +323,21 @@ def optimize_context_tool(
 # calls don't re-send the same code. Capped FIFO; rotates naturally.
 _RECENT_RETURNED: dict[str, list] = {}
 _RECENT_CAP = 250
+_RECENT_LOCK = threading.Lock()
 
 
 def _record_returned(key: str, ids: list) -> None:
-    lst = _RECENT_RETURNED.setdefault(key, [])
-    seen = set(lst)
-    for i in ids:
-        if i not in seen:
-            lst.append(i)
-            seen.add(i)
-    if len(lst) > _RECENT_CAP:
-        del lst[: len(lst) - _RECENT_CAP]
+    # FastMCP can dispatch tool calls concurrently (batch/stream); guard the FIFO
+    # so concurrent optimize_context calls don't drop entries or corrupt it.
+    with _RECENT_LOCK:
+        lst = _RECENT_RETURNED.setdefault(key, [])
+        seen = set(lst)
+        for i in ids:
+            if i not in seen:
+                lst.append(i)
+                seen.add(i)
+        if len(lst) > _RECENT_CAP:
+            del lst[: len(lst) - _RECENT_CAP]
 
 
 # Prepended to every optimized_context so the "answer from this, don't re-read"
@@ -334,7 +361,13 @@ def _select_readable_context(graph, query: str, token_budget: int, codebase_key:
     repeated/fanned-out queries don't re-send the same code.
     """
     from .tokens import count_tokens, truncate_to_tokens
-    exclude = set(_RECENT_RETURNED.get(codebase_key, [])) if codebase_key else None
+    if codebase_key:
+        # Copy under the lock — a concurrent _record_returned can append/trim the
+        # list mid-iteration (RuntimeError) or corrupt the fan-out dedup.
+        with _RECENT_LOCK:
+            exclude = set(_RECENT_RETURNED.get(codebase_key, []))
+    else:
+        exclude = None
     q = _query_graph(graph, query, token_budget, with_diagnostics=True, exclude_ids=exclude)
     if codebase_key:
         # Dedup BOTH query-selected nodes and surfaced dependencies, so a
@@ -420,7 +453,7 @@ async def optimize_context_stream(
 
     # Stage 1: Parse (streaming)
     events.append({"stage": "parsing", "status": "started"})
-    graph = get_cached_graph(str(resolved))
+    graph = _live_graph(resolved) or get_cached_graph(str(resolved))
     if graph is not None:
         events.append({"stage": "parsing", "status": "done", "cached": True,
                         "total_nodes": graph.metadata.total_nodes})
@@ -444,6 +477,8 @@ async def optimize_context_stream(
         except Exception as e:
             events.append({"stage": "parsing", "status": "error", "error": str(e)})
             return events
+
+    _ensure_watching(str(resolved), graph)
 
     # Stage 2: Select readable relevant code within budget (no lossy compression)
     events.append({"stage": "select", "status": "started"})
@@ -477,17 +512,11 @@ def optimize_context_batch(
     if not queries:
         return {"error": "No queries provided"}
 
-    # Parse once (with cache)
-    graph = get_cached_graph(str(resolved))
-    if graph is None:
-        try:
-            graph = parse_codebase(str(resolved))
-            if SCRUB_ENABLED:
-                scrub_graph_content(graph)
-            save_graph(graph, _graph_output_path(resolved))
-            set_cached_graph(str(resolved), graph)
-        except Exception as e:
-            return {"error": f"Parse failed: {e}"}
+    # Parse once — shared resolver (live watcher graph → cache → parse).
+    try:
+        graph, _gs = _resolve_graph(resolved)
+    except Exception as e:
+        return {"error": f"Parse failed: {e}"}
 
     graph_stats = {"total_nodes": graph.metadata.total_nodes,
                    "total_edges": graph.metadata.total_edges}
@@ -530,17 +559,11 @@ def optimize_context_structured(
     if not resolved.is_dir():
         return {"error": f"Not a directory: {codebase_path}"}
 
-    # Parse
-    graph = get_cached_graph(str(resolved))
-    if graph is None:
-        try:
-            graph = parse_codebase(str(resolved))
-            if SCRUB_ENABLED:
-                scrub_graph_content(graph)
-            save_graph(graph, _graph_output_path(resolved))
-            set_cached_graph(str(resolved), graph)
-        except Exception as e:
-            return {"error": f"Parse failed: {e}"}
+    # Parse — shared resolver (live watcher graph → cache → parse).
+    try:
+        graph, _gs = _resolve_graph(resolved)
+    except Exception as e:
+        return {"error": f"Parse failed: {e}"}
 
     try:
         readable, ctx_stats, _files = _select_readable_context(graph, query, token_budget, codebase_key=str(resolved))
@@ -550,11 +573,16 @@ def optimize_context_structured(
     if output_format == "json":
         # Use slurp's PageRank+TF-IDF scoring for genuinely relevant supporting nodes
         from .models import NodeType
-        from .slurp import _compute_combined_scores, _select_nodes
+        from .slurp import _compute_combined_scores
 
         content_nodes = [n for n in graph.nodes if n.type != NodeType.FILE]
         if content_nodes:
-            scores = _compute_combined_scores(content_nodes, graph.edges, query)
+            from . import embeddings as _embeddings
+            # Pass semantic scores through so supporting_nodes ranking agrees
+            # with the semantic-ranked `readable` answer returned alongside.
+            scores = _compute_combined_scores(
+                content_nodes, graph.edges, query,
+                semantic=_embeddings.semantic_scores(content_nodes, query))
             # Pick top-N nodes by score (up to 20)
             ranked_nodes = sorted(content_nodes, key=lambda n: scores.get(n.id, 0), reverse=True)
         else:
@@ -700,6 +728,13 @@ def reset_graph_tool(path: str) -> dict:
     save_graph(graph, output_path)
     set_cached_graph(str(resolved), graph)
 
+    # If a watcher is running, swap its live graph too — otherwise the tools that
+    # prefer the live graph (optimize_context / show_graph) keep serving the
+    # pre-reset graph, silently breaking "ignore cache" under autowatch.
+    state = get_watcher(str(resolved))
+    if state is not None:
+        state.replace_graph(graph)
+
     return {
         "graph_json_path": output_path,
         "total_nodes": graph.metadata.total_nodes,
@@ -763,13 +798,17 @@ def show_graph_tool(path: str, query: str = "") -> dict:
     except Exception as e:
         return {"error": f"Graph render failed: {e}"}
 
+    # webbrowser.open returns False (without raising) on headless / remote /
+    # sandboxed hosts with no browser — honor the bool so we don't mis-report
+    # success. The path is always returned so the user can open it manually.
     try:
-        webbrowser.open(f"file://{out_path}")
-        opened = True
+        opened = bool(webbrowser.open(f"file://{out_path}"))
     except Exception:
         opened = False
 
-    note = "Interactive graph opened in your browser."
+    note = ("Interactive graph opened in your browser."
+            if opened else
+            "Could not open a browser (headless/remote?). Open the graph HTML path below manually.")
     if query:
         note += f" {len(highlight_ids)} nodes highlighted for the query."
     return {

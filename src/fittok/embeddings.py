@@ -22,7 +22,19 @@ _DEFAULT_MODEL = os.environ.get(
 
 _model = None
 _unavailable = False
-_EMB_CACHE: dict[str, object] = {}  # content-hash -> embedding vector (per process)
+# Capped FIFO (oldest evicted when full): a long-lived server parsing many
+# codebases would otherwise grow this forever. L2 (diskcache) persists, so
+# evicting L1 only costs a disk hit.
+import collections as _collections
+_EMB_CACHE: "_collections.OrderedDict[str, object]" = _collections.OrderedDict()
+_EMB_CACHE_MAX = 4096
+
+
+def _emb_cache_put(k: str, v) -> None:
+    """Insert into the L1 embedding cache, evicting oldest (FIFO) when full."""
+    _EMB_CACHE[k] = v
+    while len(_EMB_CACHE) > _EMB_CACHE_MAX:
+        _EMB_CACHE.popitem(last=False)
 
 
 def _get_model():
@@ -100,7 +112,7 @@ def _embed_cached(model, texts: list[str]):
             # L2: persistent disk cache (survives restarts; incremental by content)
             vec = _cache.get_cached_embedding(k)
             if vec is not None:
-                _EMB_CACHE[k] = vec
+                _emb_cache_put(k, vec)
         if vec is None:
             missing_i.append(i)
             missing_t.append(texts[i])
@@ -109,7 +121,7 @@ def _embed_cached(model, texts: list[str]):
     if missing_t:
         enc = model.encode(missing_t, normalize_embeddings=True, show_progress_bar=False)
         for j, i in enumerate(missing_i):
-            _EMB_CACHE[keys[i]] = enc[j]
+            _emb_cache_put(keys[i], enc[j])
             _cache.set_cached_embedding(keys[i], enc[j])
             out[i] = enc[j]
     return np.array(out)

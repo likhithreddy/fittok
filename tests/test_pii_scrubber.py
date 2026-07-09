@@ -71,7 +71,11 @@ class TestScrubFile:
         result = scrub_file(str(tmp_path / "secret.py"))
         assert result["count"] >= 1
         assert "output_path" in result
-        assert (tmp_path / "secret.py.scrubbed").exists()
+        # Default output lands in the cache dir, NOT next to the source file.
+        from fittok.cache import CACHE_DIR
+        assert result["output_path"].startswith(CACHE_DIR)
+        assert Path(result["output_path"]).exists()
+        assert not (tmp_path / "secret.py.scrubbed").exists()
 
     def test_scrub_file_custom_output(self, tmp_path):
         (tmp_path / "data.txt").write_text("user@example.com")

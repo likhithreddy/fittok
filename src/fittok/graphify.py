@@ -69,6 +69,21 @@ def _is_generated_file(path: Path) -> bool:
     name = path.name.lower()
     return name.endswith(_GENERATED_SUFFIXES) or ".min." in name or name.endswith(".d.ts")
 
+# Tree-sitter node types that represent a function/method call, per language.
+# Python's grammar calls it `call`; every other supported grammar uses
+# `call_expression` (JS/TS/TSX/Go/Rust) or `method_invocation` (Java). Without
+# this map, _extract_calls matched only Python and produced NO call edges for
+# the other 6 languages, silently disabling structural (PageRank) relevance.
+_CALL_NODE_TYPES: dict[str, set[str]] = {
+    "python": {"call"},
+    "javascript": {"call_expression", "new_expression"},
+    "typescript": {"call_expression", "new_expression"},
+    "tsx": {"call_expression", "new_expression"},
+    "go": {"call_expression"},
+    "rust": {"call_expression", "macro_invocation"},
+    "java": {"method_invocation", "explicit_constructor_invocation"},
+}
+
 # Tree-sitter query patterns per language
 _QUERY_TEMPLATES: dict[str, list[tuple[NodeType, str]]] = {
     "python": [
@@ -296,23 +311,27 @@ def _extract_imports(node: Node, source_bytes: bytes, _lang: str) -> list[str]:
     return imports
 
 
-def _extract_calls(node: Node, source_bytes: bytes) -> list[str]:
+def _extract_calls(node: Node, source_bytes: bytes, lang: str = "python") -> list[str]:
     """Extract function/method call names from within a node."""
     calls: list[str] = []
-    _walk_calls(node, source_bytes, calls)
+    _walk_calls(node, source_bytes, calls, _CALL_NODE_TYPES.get(lang, {"call"}))
     return calls
 
 
-def _walk_calls(node: Node, source_bytes: bytes, calls: list[str]) -> None:
-    if node.type == "call":
-        callee = node.child_by_field_name("function")
+def _walk_calls(node: Node, source_bytes: bytes, calls: list[str], call_types: set[str]) -> None:
+    if node.type in call_types:
+        # Python/JS/TS/Go/Rust expose the callee via the `function` field; Java
+        # `method_invocation` exposes it via `name` (plus an optional `object`).
+        callee = (node.child_by_field_name("function")
+                  or node.child_by_field_name("constructor")  # `new X(...)` / Java ctor
+                  or node.child_by_field_name("name"))
         if callee is None and node.children:
             callee = node.children[0]
         if callee:
             name = source_bytes[callee.start_byte:callee.end_byte].decode("utf-8", errors="replace")
             calls.append(name)
     for child in node.children:
-        _walk_calls(child, source_bytes, calls)
+        _walk_calls(child, source_bytes, calls, call_types)
 
 
 # ── Import resolution ─────────────────────────────────────────────────────────
@@ -442,7 +461,7 @@ def parse_file(filepath: Path, root: Path) -> tuple[list[GraphNode], list[GraphE
 
             edges.append(GraphEdge(source=file_id, target=node_id, type=EdgeType.CONTAINS))
 
-            calls = _extract_calls(ts_node, source_bytes)
+            calls = _extract_calls(ts_node, source_bytes, lang_name)
             for call_name in calls:
                 edges.append(GraphEdge(
                     source=node_id,
@@ -715,10 +734,13 @@ def update_graph(graph: KnowledgeGraph, root_path: str, changed_files: list[str]
     # Remove old nodes/edges for changed files
     changed_rel = set()
     for cf in changed_files:
+        # Resolve so symlinked roots (e.g. macOS /tmp -> /private/tmp) still
+        # match the resolved `root` and the relative paths stored on nodes.
+        rcf = Path(cf).resolve()
         try:
-            changed_rel.add(str(Path(cf).relative_to(root)))
+            changed_rel.add(str(rcf.relative_to(root)))
         except ValueError:
-            changed_rel.add(cf)
+            changed_rel.add(str(rcf))
 
     # Filter out old data for changed files
     kept_nodes = [n for n in graph.nodes if n.file not in changed_rel]
@@ -734,7 +756,11 @@ def update_graph(graph: KnowledgeGraph, root_path: str, changed_files: list[str]
     new_nodes: list[GraphNode] = []
     new_edges: list[GraphEdge] = []
     for cf in changed_files:
-        fp = Path(cf)
+        # Resolve so symlinked roots (macOS /tmp -> /private/tmp) match the
+        # resolved `root` inside parse_file's relative_to() — otherwise the old
+        # nodes are removed (matched on the resolved path) but re-parse silently
+        # fails and they're lost.
+        fp = Path(cf).resolve()
         if not fp.is_file() or fp.suffix not in _EXT_TO_LANG:
             continue
         try:
@@ -746,26 +772,38 @@ def update_graph(graph: KnowledgeGraph, root_path: str, changed_files: list[str]
 
     # Merge
     merged_nodes = kept_nodes + new_nodes
-    merged_edges = kept_edges + new_edges
-
-    # Re-resolve edges
-    resolved = _resolve_edges(merged_nodes, merged_edges)
+    # kept_edges are ALREADY resolved (target = node id) — do NOT re-resolve them.
+    # _resolve_edges looks targets up by bare NAME, which misses resolved ids and
+    # would drop every kept CALLS/IMPORTS/REFERENCES edge, eroding the call graph
+    # on each incremental update. Only the freshly re-parsed `new_edges` carry
+    # placeholder (bare-name) targets that need resolution.
+    # (Edges from unchanged files into changed files whose targets no longer
+    # exist are already excluded by the kept_edges filter above. Recovering those
+    # would require retaining the original callee name on each edge.)
+    resolved_new = _resolve_edges(merged_nodes, new_edges)
+    merged_edges = kept_edges + resolved_new
 
     return KnowledgeGraph(
         nodes=merged_nodes,
-        edges=resolved,
+        edges=merged_edges,
         metadata=GraphMetadata(
             root=str(root),
             total_nodes=len(merged_nodes),
-            total_edges=len(resolved),
+            total_edges=len(merged_edges),
         ),
     )
 
 
 def save_graph(graph: KnowledgeGraph, output_path: str | None = None) -> str:
-    """Save a KnowledgeGraph to JSON. Returns the output path."""
+    """Save a KnowledgeGraph to JSON. Returns the output path.
+
+    Defaults to the cache dir (NOT the user's repo root) so a caller that omits
+    the path doesn't pollute their codebase with a graph.json that can get
+    committed.
+    """
     if output_path is None:
-        output_path = os.path.join(graph.metadata.root, "graph.json")
+        from .cache import graph_output_path
+        output_path = graph_output_path(graph.metadata.root)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(graph.model_dump_json(indent=2))
     logger.info("Graph saved to %s (%d nodes, %d edges)", output_path, len(graph.nodes), len(graph.edges))

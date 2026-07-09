@@ -204,8 +204,11 @@ class TestSaveLoadGraph:
         graph = parse_codebase(str(sample_python_project))
         path = save_graph(graph)
 
+        from fittok.cache import CACHE_DIR
         assert Path(path).exists()
-        assert path.endswith("graph.json")
+        assert path.endswith(".json")
+        # Default must land in the cache dir, NOT the user's repo root.
+        assert path.startswith(CACHE_DIR)
 
         # Cleanup
         Path(path).unlink(missing_ok=True)

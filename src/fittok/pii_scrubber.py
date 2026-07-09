@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,13 @@ def scrub_file(path: str, output_path: str | None = None) -> dict:
     result = scrub_text(content)
 
     if output_path is None:
-        output_path = str(filepath) + ".scrubbed"
+        # Default to the cache dir, NOT next to the source file (a .scrubbed file
+        # dropped into the user's tree is surprising and can get committed).
+        import os
+        from .cache import CACHE_DIR
+        out_dir = os.path.join(CACHE_DIR, "scrubbed")
+        os.makedirs(out_dir, exist_ok=True)
+        output_path = os.path.join(out_dir, filepath.name + ".scrubbed")
 
     Path(output_path).write_text(result["scrubbed"], encoding="utf-8")
 
@@ -108,6 +115,19 @@ def list_pii_patterns() -> dict:
     }
 
 
+_PII_LOCK = threading.Lock()
+
+
+def _looks_re_dos(regex: str) -> bool:
+    """Heuristic guard: reject regexes that are the classic ReDoS footgun
+    (nested quantifiers like ``(a+)+`` / ``(a*)*``, or very long patterns). Not
+    a complete defense — Python's stdlib ``re`` has no timeout — but it blocks
+    the common case where a crafted client pattern could hang the server."""
+    if len(regex) > 500:
+        return True
+    return bool(re.search(r"\([^)]*[+*?][^)]*\)[+*?]", regex))
+
+
 def add_pii_pattern(name: str, regex: str) -> dict:
     """Add or override a PII pattern at runtime.
 
@@ -118,13 +138,16 @@ def add_pii_pattern(name: str, regex: str) -> dict:
     Returns:
         Dict with success status and pattern info.
     """
+    if _looks_re_dos(regex):
+        return {"error": "Pattern rejected: possible ReDoS risk (nested quantifiers or overly long). Simplify it."}
     try:
         compiled = re.compile(regex)
     except re.error as e:
         return {"error": f"Invalid regex: {e}"}
 
-    PII_PATTERNS[name] = regex
-    _compiled[name] = compiled
+    with _PII_LOCK:
+        PII_PATTERNS[name] = regex
+        _compiled[name] = compiled
 
     return {
         "added": True,
@@ -144,7 +167,11 @@ def scrub_graph_content(graph) -> None:
 
 
 def _preview(value: str, max_len: int = 20) -> str:
-    """Create a safe preview of a PII match."""
-    if len(value) <= max_len:
-        return value[:3] + "..." + value[-3:]
-    return value[:3] + "..." + value[-3:]
+    """Create a safe preview of a PII match.
+
+    Never echoes real characters of the secret — the old impl leaked the first
+    and last 3 chars of every match into the findings list. Report only length
+    and a fully-masked form.
+    """
+    n = len(value)
+    return f"({'*' * min(n, 16)})[len={n}]"

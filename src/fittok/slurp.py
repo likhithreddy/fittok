@@ -50,6 +50,9 @@ def pagerank(
 
     id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
     adj = _build_adjacency(nodes, edges)
+    # Precompute per-node degree once so the hot inner loop doesn't call
+    # len(adj.get(...)) for every neighbor on every iteration.
+    degree = {nid: len(nb) for nid, nb in adj.items()}
 
     # Initialize scores uniformly
     scores = np.full(n, 1.0 / n)
@@ -57,12 +60,13 @@ def pagerank(
     for _ in range(max_iter):
         prev = scores.copy()
         for i, nid in enumerate(node_ids):
-            neighbors = adj.get(nid, set())
+            neighbors = adj.get(nid)
+            if not neighbors:
+                scores[i] = (1 - damping) / n
+                continue
             rank_sum = 0.0
             for neighbor in neighbors:
-                j = id_to_idx[neighbor]
-                degree = len(adj.get(neighbor, set()))
-                rank_sum += prev[j] / max(degree, 1)
+                rank_sum += prev[id_to_idx[neighbor]] / max(degree.get(neighbor, 1), 1)
             scores[i] = (1 - damping) / n + damping * rank_sum
 
         # Normalize
@@ -221,7 +225,9 @@ def _select_nodes(
         node = node_map.get(nid)
         if node is None:
             continue
-        node_tokens = count_tokens(node.content) if node.content else count_tokens(node.name) + 10
+        # Reuse the token_count stored at parse time (re-encoding via tiktoken on
+        # every candidate is pure recomputation). Fall back only when unset.
+        node_tokens = node.token_count or (count_tokens(node.content) if node.content else count_tokens(node.name) + 10)
         if tokens_used + node_tokens > token_budget:
             continue
         selected_ids.add(nid)
@@ -240,7 +246,9 @@ def _select_nodes(
         node = node_map.get(nid)
         if node is None:
             continue
-        node_tokens = count_tokens(node.content) if node.content else count_tokens(node.name) + 10
+        # Reuse the token_count stored at parse time (re-encoding via tiktoken on
+        # every candidate is pure recomputation). Fall back only when unset.
+        node_tokens = node.token_count or (count_tokens(node.content) if node.content else count_tokens(node.name) + 10)
         if tokens_used + node_tokens > token_budget:
             continue
         selected_ids.add(nid)
