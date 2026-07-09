@@ -155,14 +155,17 @@ def _compute_combined_scores(
     pagerank_weight: float = PAGERANK_WEIGHT,
     tfidf_weight: float = TFIDF_WEIGHT,
     semantic: dict[str, float] | None = None,
+    tf: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Combine PageRank + TF-IDF (+ semantic, if provided) into one score per node.
 
     When *semantic* embeddings scores are supplied, they dominate the blend;
-    otherwise this is the original PageRank/TF-IDF combination.
+    otherwise this is the original PageRank/TF-IDF combination. Pass ``tf`` to
+    reuse a TF-IDF dict the caller already computed (avoids recomputing it).
     """
     pr = pagerank(nodes, edges)
-    tf = tfidf_scores(nodes, query)
+    if tf is None:
+        tf = tfidf_scores(nodes, query)
 
     if semantic:
         pr_n, tf_n, sem_n = _minmax(pr), _minmax(tf), _minmax(semantic)
@@ -426,7 +429,13 @@ MAX_BUDGET = 4000     # (Claude Code spills >~10k tool results to disk → re-re
 # floor from the near-uniform PageRank on a flat graph). A node is eligible if
 # its cosine is within REL_FRACTION of the top cosine AND above ABS_FLOOR.
 REL_FRACTION = 0.6
-ABS_FLOOR = 0.22
+# Absolute floor for the relevance cliff. Kept LOW so the relative fraction
+# (REL_FRACTION * top) governs for normal/medium-confidence queries — a higher
+# floor overrides the relative cliff on hard/multifaceted queries (where the top
+# raw-cosine is modest) and excludes nodes that are genuinely relevant at, say,
+# 60-70% of the top score. The floor only kicks in for near-zero-top (garbage)
+# queries to avoid returning everything.
+ABS_FLOOR = 0.13
 
 
 def _eligible_ids(relevance: dict[str, float]) -> set:
@@ -503,8 +512,10 @@ def query_graph(
     semantic = embeddings.semantic_scores(content_nodes, query)
     method = "semantic+lexical" if semantic else "lexical"
 
+    # TF-IDF computed once and reused for scoring, confidence, and eligibility.
+    tf = tfidf_scores(content_nodes, query)
     scores = _compute_combined_scores(
-        content_nodes, graph.edges, query, pagerank_weight, tfidf_weight, semantic=semantic
+        content_nodes, graph.edges, query, pagerank_weight, tfidf_weight, semantic=semantic, tf=tf
     )
 
     # Soft down-rank test files so implementation surfaces first — unless the
@@ -520,7 +531,6 @@ def query_graph(
         confidence = max(semantic.values()) if semantic else 0.0
         low_conf = confidence < SEMANTIC_CONFIDENCE_THRESHOLD
     else:
-        tf = tfidf_scores(content_nodes, query)
         confidence = max(tf.values()) if tf else 0.0
         low_conf = confidence < 0.05
     confidence_label = "low" if low_conf else ("high" if confidence >= 0.5 else "medium")
@@ -528,7 +538,15 @@ def query_graph(
     # Eligibility cliff on raw semantic relevance (falls back to combined scores
     # when embeddings are unavailable). Drives BOTH the adaptive budget and what
     # can be selected, so only the genuinely-relevant cluster is returned.
-    eligible_ids = _eligible_ids(semantic if semantic else scores)
+    # Eligibility: relevant by EITHER signal — raw semantic cosine OR lexical
+    # (TF-IDF) overlap. A pure-semantic cliff lets one facet of a multifaceted
+    # query raise the relative cliff and starve keyword-relevant nodes from other
+    # facets (e.g. the query-execution function when the query also asks about
+    # auth). TF-IDF is a genuine relevance signal, not hub-noise.
+    if semantic:
+        eligible_ids = _eligible_ids(semantic) | _eligible_ids(tf)
+    else:
+        eligible_ids = _eligible_ids(scores)
     # Exclude test files from eligibility (raw cosine doesn't see the test
     # penalty) unless the query is itself about tests — keep them only if that
     # would otherwise leave nothing.
