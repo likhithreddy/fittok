@@ -38,6 +38,33 @@ which case an edit triggers a full re-parse on the next query.
 
 ---
 
+## Getting the best results (and known limitations)
+
+### Ask focused questions
+
+fittok ranks code against your question by **semantic similarity**. It's most
+accurate with **focused, specific questions** — ideally one concern each, and
+naming the function/component/route when you can.
+
+- ✅ *"How does `runSandboxQuery` execute and isolate a SQL query?"* → surfaces the exact function + its isolation code.
+- ✅ *"How does the querydle client submit a query and render results?"* → surfaces the UI component.
+- ⚠️ *"Trace the full feature end-to-end — UI, routes, streaming, auth, and DB isolation"* → one embedding tries to cover many concerns; the most "popular" concern (often auth/utilities) can dominate the ranking and crowd out the part you care about. If the slice misses the file you need, the model will (correctly) read it — so you lose the token savings.
+
+**Rule of thumb:** one concern per question (or 2–3 facets max). For "explain
+the whole feature," split it into a few focused questions instead of one mega-query.
+
+### Known limitations
+
+- **Broad / abstract multi-facet queries can miss the key file.** The embedding model has a ceiling matching code to vague natural language — a key function with a generic name can rank below a semantically-adjacent utility. Mitigation: focused queries, or name the symbol. (A stronger/code-tuned embedding model, set via `FITTOK_EMBED_MODEL`, is the lever to push past this.)
+- **Incremental edge-loss:** editing a file can drop call/import edges *into* it from unchanged files until a full re-parse. fittok auto-recovers on restart or `reset_graph`.
+- **Token budgets are approximate:** counts use `cl100k_base`, so real usage drifts ~10–20% vs Claude's tokenizer (headroom is built into the budget constants).
+- **Very large repos:** PageRank is not yet vectorized — fine through low-thousands of nodes, slower beyond that.
+
+None of these block normal use; focused queries sidestep the first (the only one
+you're likely to feel).
+
+---
+
 ## Installation
 
 fittok ships as an **MCP server**, a **CLI**, and a **Python library**. It uses
