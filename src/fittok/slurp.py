@@ -11,6 +11,7 @@ import re
 from collections import defaultdict
 
 import numpy as np
+from rank_bm25 import BM25Okapi
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 from .models import KnowledgeGraph, NodeType
@@ -110,6 +111,62 @@ def tfidf_scores(
     similarities = (node_vecs @ query_vec.transpose()).toarray().flatten()
 
     return {n.id: float(similarities[i]) for i, n in enumerate(nodes)}
+
+
+# ── BM25 scoring ──────────────────────────────────────────────────────────────
+
+
+def _tokenize_for_bm25(text: str) -> list[str]:
+    """Tokenize for BM25 — split identifiers (camelCase, snake_case, paths) into
+    individual terms so 'runSandboxQuery' → ['run', 'sandbox', 'query'] and
+    'execute.ts' → ['execute', 'ts']. This bridges the vocabulary gap between
+    natural-language queries and code identifiers."""
+    words = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", text)
+    tokens: list[str] = []
+    for w in words:
+        # Split camelCase: "runSandboxQuery" → "run" "Sandbox" "Query"
+        parts = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", w).split()
+        for p in parts:
+            tokens.extend(p.lower().split("_"))
+    return tokens
+
+
+def bm25_scores(nodes: list, query: str) -> dict[str, float]:
+    """BM25 similarity of each node (name + file + content) to the query.
+
+    Stronger than TF-IDF for code: term-frequency saturation rewards repeated
+    terms without over-boosting; document-length normalization handles the
+    large-vs-small function disparity. camelCase/snake_case splitting lets
+    'execute' match 'execute.ts' and 'query' match 'runSandboxQuery'.
+    """
+    if not nodes:
+        return {}
+    docs = [_tokenize_for_bm25(f"{n.name} {n.file} {n.content or ''}") for n in nodes]
+    query_tokens = _tokenize_for_bm25(query)
+    if not query_tokens:
+        return {n.id: 0.0 for n in nodes}
+    bm25 = BM25Okapi(docs)
+    raw_scores = bm25.get_scores(query_tokens)
+    return {nodes[i].id: float(raw_scores[i]) for i in range(len(nodes))}
+
+
+def _reciprocal_rank_fusion(score_dicts: list, k: int = 60) -> dict[str, float]:
+    """Fuse multiple ranked score dicts via Reciprocal Rank Fusion.
+
+    Each node gets 1/(k+rank) per signal, summed across signals. A node
+    consistently top-ranked across semantic, BM25, and PageRank scores highest.
+    Rank-based fusion avoids the calibration problem of mixing cosine [0,1]
+    with BM25 [0,∞] — their RANKS are directly comparable even when their raw
+    scores are not.
+    """
+    fused: dict[str, float] = defaultdict(float)
+    for scores in score_dicts:
+        if not scores:
+            continue
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        for rank, (nid, _) in enumerate(ranked, 1):
+            fused[nid] += 1.0 / (k + rank)
+    return dict(fused)
 
 
 # ── Combined scoring and selection ────────────────────────────────────────────
@@ -510,13 +567,18 @@ def query_graph(
     # Semantic scoring (None if embeddings unavailable → lexical fallback).
     from . import embeddings
     semantic = embeddings.semantic_scores(content_nodes, query)
-    method = "semantic+lexical" if semantic else "lexical"
+    method = "hybrid (RRF)" if semantic else "bm25+pagerank (RRF)"
 
-    # TF-IDF computed once and reused for scoring, confidence, and eligibility.
+    # BM25 + semantic + PageRank, fused via Reciprocal Rank Fusion (RRF).
+    # BM25 replaces TF-IDF for keyword matching (better saturation + length
+    # normalization; camelCase splitting bridges query↔code vocabulary). RRF
+    # fuses by rank (not raw score), avoiding the calibration problem of mixing
+    # cosine [0,1] with BM25 [0,∞].
+    bm25 = bm25_scores(content_nodes, query)
+    pr = pagerank(content_nodes, graph.edges)
+    scores = _reciprocal_rank_fusion([semantic or {}, bm25, pr])
+    # TF-IDF kept only for the lexical-fallback confidence metric.
     tf = tfidf_scores(content_nodes, query)
-    scores = _compute_combined_scores(
-        content_nodes, graph.edges, query, pagerank_weight, tfidf_weight, semantic=semantic, tf=tf
-    )
 
     # Soft down-rank test files so implementation surfaces first — unless the
     # query is itself about tests.
@@ -544,9 +606,9 @@ def query_graph(
     # facets (e.g. the query-execution function when the query also asks about
     # auth). TF-IDF is a genuine relevance signal, not hub-noise.
     if semantic:
-        eligible_ids = _eligible_ids(semantic) | _eligible_ids(tf)
+        eligible_ids = _eligible_ids(semantic) | _eligible_ids(bm25)
     else:
-        eligible_ids = _eligible_ids(scores)
+        eligible_ids = _eligible_ids(bm25)
     # Exclude test files from eligibility (raw cosine doesn't see the test
     # penalty) unless the query is itself about tests — keep them only if that
     # would otherwise leave nothing.
