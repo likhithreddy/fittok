@@ -68,9 +68,12 @@ mcp = FastMCP(
         "Retrieves the most relevant REAL source code for a question about a "
         "codebase, within a token budget. Prefer `optimize_context` for "
         "'how does X work / where is Y' questions instead of reading files or "
-        "grepping. Call it ONCE per question and answer directly from the "
-        "returned `optimized_context` — do not separately read the files it came "
-        "from, as that negates the token savings."
+        "grepping. For MULTI-ASPECT questions (e.g. 'how does X work AND how "
+        "is Y isolated?'), call optimize_context ONCE PER ASPECT with a focused "
+        "sub-query, then synthesize the results — a single broad call may miss "
+        "facets. Always answer directly from the returned `optimized_context` "
+        "and do NOT separately read the files it came from, as that negates the "
+        "token savings."
     ),
 )
 
@@ -270,10 +273,13 @@ def optimize_context_tool(
     """Return the most relevant REAL source code for a question, within a token budget.
 
     Use this FIRST for any "how does X work / where is Y" question about the
-    codebase, and prefer it over reading files or grepping. Call it ONCE per
-    question: the returned `optimized_context` contains the relevant code —
-    answer directly from it and do NOT separately read the files it came from
-    (that defeats the whole point of the token savings).
+    codebase, and prefer it over reading files or grepping. For MULTI-ASPECT
+    questions (e.g. "how does X work AND how is Y isolated?"), call this tool
+    ONCE PER ASPECT with a focused sub-query, then synthesize the results.
+    A single broad call may miss facets; focused per-aspect calls are precise.
+
+    Always answer directly from the returned `optimized_context` and do NOT
+    separately read the files it came from (that defeats the token savings).
     """
     logger.info("optimize_context: %s (budget=%d)", codebase_path, token_budget)
 

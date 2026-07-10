@@ -575,7 +575,7 @@ def query_graph(
     # (below the cliff). This is the fix for the re-read problem — without it,
     # the model used to re-open the file to resolve an undefined MODEL_NAME.
     # Capped to a fraction of the budget, with headroom for the low-conf banner.
-    neighbor_cap = max(0, min(
+    neighbor_cap = max(150, min(
         NEIGHBOR_MAX_TOKENS,
         effective_budget - main_tokens - 64,
         int(effective_budget * NEIGHBOR_BUDGET_FRACTION),
