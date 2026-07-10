@@ -385,7 +385,12 @@ def _select_readable_context(graph, query: str, token_budget: int, codebase_key:
         readable = truncate_to_tokens(readable, eff_budget)
     # Prepend AFTER truncation so the note is never cut, and so the instruction
     # sits directly above the code the model is about to reason over.
-    readable = _AUTHORITY_NOTE + readable
+    # The codebase map (Karpathy LLM Wiki / OKF inspired) gives the model a
+    # table-of-contents so it can make precise follow-up calls if the slice
+    # missed a file — instead of reading blindly.
+    from .slurp import generate_codebase_map
+    codebase_map = generate_codebase_map(graph)
+    readable = _AUTHORITY_NOTE + codebase_map + "\n\n---\n\n" + readable
     tokens_sent = count_tokens(readable)
     stats = {
         "selected_nodes": q["selected_nodes"],

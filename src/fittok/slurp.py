@@ -150,6 +150,82 @@ def bm25_scores(nodes: list, query: str) -> dict[str, float]:
     return {nodes[i].id: float(raw_scores[i]) for i in range(len(nodes))}
 
 
+def _build_edge_indexes(edges) -> tuple[dict, dict]:
+    """Build source→targets and target→sources indexes for O(1) caller/callee lookup."""
+    by_source: dict[str, list] = defaultdict(list)
+    by_target: dict[str, list] = defaultdict(list)
+    for e in edges:
+        by_source[e.source].append(e.target)
+        by_target[e.target].append(e.source)
+    return dict(by_source), dict(by_target)
+
+
+def _short_name(node_id: str) -> str:
+    """Extract the human-readable name from a node ID like 'function:lib/foo.ts:bar:12'."""
+    parts = node_id.split(":")
+    return parts[-2] if len(parts) >= 2 else node_id
+
+
+def _node_summary(node, by_source: dict, by_target: dict) -> str:
+    """One-line summary of a node for summary-BM25 — includes structural context
+    (callers + callees) that bridges query↔code vocabulary better than raw content.
+
+    Example: 'runSandboxQuery lib/sandbox/execute.ts function callers:run,submit calls:validateQuery,connect,query'
+    """
+    callers = by_target.get(node.id, [])
+    callees = by_source.get(node.id, [])
+    parts = [node.name, node.file, node.type.value]
+    if callers:
+        parts.append("callers:" + ",".join(_short_name(c) for c in callers[:5]))
+    if callees:
+        parts.append("calls:" + ",".join(_short_name(c) for c in callees[:5]))
+    return " ".join(parts)
+
+
+def summary_bm25_scores(nodes, query, by_source, by_target) -> dict[str, float]:
+    """BM25 on one-line node summaries (name + file + callers + callees).
+
+    Richer than content-BM25: the summary 'runSandboxQuery execute.ts callers:run,submit
+    calls:validateQuery,connect' matches 'server executes SQL query' via structural
+    context (callers connect UI→server, callees reveal execution helpers).
+    """
+    if not nodes:
+        return {}
+    summaries = [_tokenize_for_bm25(_node_summary(n, by_source, by_target)) for n in nodes]
+    query_tokens = _tokenize_for_bm25(query)
+    if not query_tokens:
+        return {n.id: 0.0 for n in nodes}
+    bm25 = BM25Okapi(summaries)
+    raw_scores = bm25.get_scores(query_tokens)
+    return {nodes[i].id: float(raw_scores[i]) for i in range(len(nodes))}
+
+
+def generate_codebase_map(graph, max_tokens: int = 500) -> str:
+    """Generate a compact codebase table-of-contents from the knowledge graph.
+
+    Groups functions/classes by file, lists them with line numbers. This is the
+    'map' the model reads to route its queries — inspired by Karpathy's LLM Wiki
+    and Google's Open Knowledge Format (OKF). If the code slice misses a file,
+    the model sees it in the map and can make a precise follow-up call.
+    """
+    by_file: dict[str, list] = defaultdict(list)
+    for n in graph.nodes:
+        if n.type.value not in ("file", "module") and n.name:
+            by_file[n.file].append(n)
+    lines = ["## Codebase map (key entry points)\n"]
+    tokens = count_tokens(lines[0])
+    for file_path in sorted(by_file):
+        nodes = sorted(by_file[file_path], key=lambda n: n.line_start)
+        funcs = ", ".join(f"{n.name}:L{n.line_start}" for n in nodes[:6])
+        entry = f"- `{file_path}`: {funcs}"
+        t = count_tokens(entry)
+        if tokens + t > max_tokens:
+            break
+        lines.append(entry)
+        tokens += t
+    return "\n".join(lines)
+
+
 def _reciprocal_rank_fusion(score_dicts: list, k: int = 60) -> dict[str, float]:
     """Fuse multiple ranked score dicts via Reciprocal Rank Fusion.
 
@@ -162,6 +238,9 @@ def _reciprocal_rank_fusion(score_dicts: list, k: int = 60) -> dict[str, float]:
     fused: dict[str, float] = defaultdict(float)
     for scores in score_dicts:
         if not scores:
+            continue
+        # Skip all-zero signals — they add rank noise without information.
+        if max(scores.values()) <= 0:
             continue
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         for rank, (nid, _) in enumerate(ranked, 1):
@@ -567,16 +646,17 @@ def query_graph(
     # Semantic scoring (None if embeddings unavailable → lexical fallback).
     from . import embeddings
     semantic = embeddings.semantic_scores(content_nodes, query)
-    method = "hybrid (RRF)" if semantic else "bm25+pagerank (RRF)"
+    method = "hybrid+map (RRF)" if semantic else "bm25+map+pagerank (RRF)"
 
-    # BM25 + semantic + PageRank, fused via Reciprocal Rank Fusion (RRF).
-    # BM25 replaces TF-IDF for keyword matching (better saturation + length
-    # normalization; camelCase splitting bridges query↔code vocabulary). RRF
-    # fuses by rank (not raw score), avoiding the calibration problem of mixing
-    # cosine [0,1] with BM25 [0,∞].
+    # 4-signal RRF: semantic + content-BM25 + summary-BM25 + PageRank.
+    # Summary-BM25 scores one-line node summaries (name + file + callers + callees)
+    # which bridge the vocabulary gap: 'runSandboxQuery execute.ts callers:run,submit
+    # calls:validateQuery' matches 'server executes SQL query' via structural context.
+    by_source, by_target = _build_edge_indexes(graph.edges)
     bm25 = bm25_scores(content_nodes, query)
+    smb25 = summary_bm25_scores(content_nodes, query, by_source, by_target)
     pr = pagerank(content_nodes, graph.edges)
-    scores = _reciprocal_rank_fusion([semantic or {}, bm25, pr])
+    scores = _reciprocal_rank_fusion([semantic or {}, bm25, smb25, pr])
     # TF-IDF kept only for the lexical-fallback confidence metric.
     tf = tfidf_scores(content_nodes, query)
 
@@ -600,15 +680,13 @@ def query_graph(
     # Eligibility cliff on raw semantic relevance (falls back to combined scores
     # when embeddings are unavailable). Drives BOTH the adaptive budget and what
     # can be selected, so only the genuinely-relevant cluster is returned.
-    # Eligibility: relevant by EITHER signal — raw semantic cosine OR lexical
-    # (TF-IDF) overlap. A pure-semantic cliff lets one facet of a multifaceted
-    # query raise the relative cliff and starve keyword-relevant nodes from other
-    # facets (e.g. the query-execution function when the query also asks about
-    # auth). TF-IDF is a genuine relevance signal, not hub-noise.
+    # Eligibility: relevant by ANY signal — semantic OR content-BM25 OR summary-BM25.
+    # The summary-BM25 channel catches nodes whose structural context (callers,
+    # callees, file path) matches the query even when the raw content doesn't.
     if semantic:
-        eligible_ids = _eligible_ids(semantic) | _eligible_ids(bm25)
+        eligible_ids = _eligible_ids(semantic) | _eligible_ids(bm25) | _eligible_ids(smb25)
     else:
-        eligible_ids = _eligible_ids(bm25)
+        eligible_ids = _eligible_ids(bm25) | _eligible_ids(smb25)
     # Exclude test files from eligibility (raw cosine doesn't see the test
     # penalty) unless the query is itself about tests — keep them only if that
     # would otherwise leave nothing.

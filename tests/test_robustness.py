@@ -53,7 +53,7 @@ def test_query_diagnostics_shape():
                           with_diagnostics=True)
         assert set(res) >= {"markdown", "selected_nodes", "tokens_used",
                             "method", "confidence", "confidence_label", "top_nodes"}
-        assert res["method"] in ("semantic+lexical", "lexical", "hybrid (RRF)", "bm25+pagerank (RRF)")
+        assert res["method"] in ("semantic+lexical", "lexical", "hybrid (RRF)", "bm25+pagerank (RRF)", "hybrid+map (RRF)", "bm25+map+pagerank (RRF)")
         assert 0.0 <= res["confidence"] <= 1.0
 
 
