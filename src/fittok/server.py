@@ -398,13 +398,23 @@ def _select_readable_context(graph, query: str, token_budget: int, codebase_key:
     # within budget. A truncate_to_tokens call here would slice the last
     # function in half, which is exactly what forced the model to re-open the
     # file (via `nl -ba | sed`) to see the rest of the cut-off body.
-    # Prepend the authority note + codebase map. MAX_BUDGET (1600) is sized to
-    # leave room for these (~560 tok) so the TOTAL output stays under Copilot's
+    # Prepend the authority note + codebase map + flow trace. MAX_BUDGET (1600)
+    # is sized to leave room for these so the TOTAL output stays under Copilot's
     # ~10 KB MCP truncation wall (copilot-cli#1732) — over it, the host chops
     # the tail and the model sees "elided" bodies → escalation + re-reads.
-    from .slurp import generate_codebase_map
+    from .slurp import generate_codebase_map, generate_flow_trace
     codebase_map = generate_codebase_map(graph)
-    readable = _AUTHORITY_NOTE + codebase_map + "\n\n---\n\n" + readable
+    # Flow trace = the complete call chain among the selected nodes. Gives the
+    # model verifiable completeness for flow questions ("how does X work") so it
+    # stops re-reading files fittok already returned — the failure mode where it
+    # couldn't tell the slice was complete.
+    # Preserve relevance order (selected in score order, then neighbors) so the
+    # flow trace leads with the query-relevant entry points, not graph order.
+    _order = q.get("selected_ids", []) + q.get("neighbor_ids", [])
+    _by_id = {n.id: n for n in graph.nodes}
+    sel_nodes = [_by_id[i] for i in _order if i in _by_id]
+    flow_trace = generate_flow_trace(sel_nodes, graph.edges)
+    readable = _AUTHORITY_NOTE + codebase_map + flow_trace + "\n\n---\n\n" + readable
     tokens_sent = count_tokens(readable)
     stats = {
         "selected_nodes": q["selected_nodes"],

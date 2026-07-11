@@ -254,6 +254,82 @@ def generate_codebase_map(graph, max_tokens: int = 500) -> str:
     return "\n".join(lines)
 
 
+def generate_flow_trace(selected, edges, max_tokens: int = 300) -> str:
+    """Deterministic call-path narrative among the selected nodes.
+
+    This is the lever for FLOW questions ("how does X work?"). The evidence:
+    on a flow query the model re-read files fittok had ALREADY returned in full,
+    because it couldn't verify the slice was complete — flows have fuzzy edges,
+    so "is there more?" stays open and the model re-reads to be sure. On a
+    single-function query it trusts fittok, because completeness is obvious.
+
+    This trace gives the model that same verifiable completeness for flows: it
+    lists the WHOLE call chain among the selected nodes (entry → callees) with
+    file:line anchors, so the model sees nothing is omitted and stops
+    re-reading. No LLM — derived from the CALLS edges of the knowledge graph.
+    Returns "" for a single node (no flow to show).
+    """
+    from .models import EdgeType
+
+    if len(selected) < 2:
+        return ""
+
+    sel_ids = {n.id for n in selected}
+    id_to_node = {n.id: n for n in selected}
+
+    # Calls WITHIN the surfaced set = the internal flow we render.
+    calls: dict[str, list[str]] = defaultdict(list)
+    called: set[str] = set()
+    for e in edges:
+        if e.type == EdgeType.CALLS and e.source in sel_ids and e.target in sel_ids:
+            calls[e.source].append(e.target)
+            called.add(e.target)
+
+    # Only render nodes that participate in a CALLS edge — isolated nodes (no
+    # call relationship to anything else surfaced) aren't part of a 'flow' and
+    # would just be retrieval noise (e.g. an unrelated health-check route).
+    in_flow = set(calls.keys()) | called
+    if len(in_flow) < 2:
+        return ""
+
+    # Entry points: in-flow nodes not called by another in-flow node.
+    entries = [n for n in selected if n.id in in_flow and n.id not in called]
+    if not entries:
+        entries = [n for n in selected if n.id in in_flow]
+
+    def _loc(node) -> str:
+        return f"{node.file}:L{node.line_start}"
+
+    lines = ["## Flow — the complete call chain for this query\n"]
+    seen: set[str] = set()
+    budget = count_tokens(lines[0])
+
+    def render(nid: str, depth: int) -> bool:
+        nonlocal budget
+        node = id_to_node.get(nid)
+        if node is None or nid in seen or depth > 3:
+            return True  # ok
+        line = f"{'  ' * depth}- `{node.name}()` ({_loc(node)})"
+        lt = count_tokens(line + "\n")
+        if budget + lt > max_tokens:
+            return False  # over budget — stop
+        lines.append(line)
+        seen.add(nid)
+        budget += lt
+        for t in calls.get(nid, [])[:4]:
+            if not render(t, depth + 1):
+                return False
+        return True
+
+    for n in entries[:3]:
+        if not render(n.id, 0):
+            break
+
+    if len(lines) <= 1:
+        return ""  # header only — no edges rendered → nothing useful
+    return "\n".join(lines)
+
+
 def _reciprocal_rank_fusion(score_dicts: list, k: int = 60) -> dict[str, float]:
     """Fuse multiple ranked score dicts via Reciprocal Rank Fusion.
 
