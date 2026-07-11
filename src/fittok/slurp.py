@@ -730,17 +730,19 @@ SEMANTIC_CONFIDENCE_THRESHOLD = 0.15
 # this range. A hard MAX also caps explicit budgets so a stray huge value (e.g.
 # the model passing 64000) can't blow up context.
 ADAPTIVE_MIN = 600    # a 1-2 function answer should be able to come back this small
-ADAPTIVE_MAX = 1600   # Ceiling on the CODE slice. The codebase map (~500 tok) +
-                      # authority note (~60 tok) are prepended on top, so 1600 +
-                      # ~560 ≈ 2160-token TOTAL output — safely UNDER Copilot
-                      # Chat's ~10 KB MCP truncation wall (copilot-cli#1732: MCP
-                      # tool results are silently chopped at ~10 KB / ~2500 tok).
-                      # Over that wall, the host cuts the tail and the model sees
-                      # "elided" function bodies, which is what triggered the
-                      # budget-escalation + re-read loop.
-MAX_BUDGET = 1600     # Hard cap on the CODE slice for the same 10 KB reason: a
-                      # bigger code slice + the map would cross the wall and get
-                      # truncated at the host, so returning more is pointless.
+ADAPTIVE_MAX = 1200   # Ceiling on the CODE slice. The REAL Copilot limit (verified
+                      # from a captured content.json): MCP outputs above ~7-8 KB get
+                      # cached to content.json, where the ENTIRE markdown collapses
+                      # to ONE physical JSON line (newlines escaped) — and Copilot's
+                      # Read tool truncates any line at ~2000 chars. So a cached
+                      # output is effectively chopped to ~2000 chars regardless of
+                      # total size; the model can't see code past that mark. Staying
+                      # UNDER ~7 KB keeps the output INLINE (real newlines, fully
+                      # visible). 1200 code + map + flow + note ≈ 6.4 KB total.
+MAX_BUDGET = 1200     # Hard cap on the CODE slice, for the same inline-delivery
+                      # reason. Returning more just pushes the total over the cache
+                      # threshold and gets it collapsed+truncated — so a smaller,
+                      # fully-visible slice beats a larger, invisible one.
 # Relevance cliff on the RAW SEMANTIC cosine (the signal that actually
 # discriminates relevant from noise — unlike the combined score, which has a
 # floor from the near-uniform PageRank on a flat graph). A node is eligible if
