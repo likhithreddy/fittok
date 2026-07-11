@@ -241,6 +241,28 @@ Copilot CLI) so it boots the new version. For other runtimes:
 
 ---
 
+## Why tree-sitter, not LSP?
+
+fittok uses **tree-sitter** (fast, syntactic AST parsing) instead of **LSP** (Language Server Protocol — semantic analysis with types, cross-file references, go-to-definition). This is a deliberate tradeoff:
+
+| | tree-sitter (fittok) | LSP (e.g. Serena MCP) |
+|---|---|---|
+| **What it returns** | Actual source code — the model answers directly | Symbol metadata (names, refs, types) — the model must still Read files |
+| **Setup** | Zero config, works on any directory | Needs language servers installed + project config (tsconfig, pyproject, etc.) |
+| **Languages** | 8 out of the box (Python, JS/TS/TSX, Java, Go, Rust) | Only as many as LSP servers you've installed |
+| **Startup** | ~15s (parse + embed) | Minutes (full project indexing per language) |
+| **Memory** | ~100 MB (graph + embeddings) | 500 MB+ per language server |
+| **Model calls per question** | 1–5 (one-shot retrieval) | 5–20+ (iterative symbol navigation) |
+| **Token cost** | ~2,500 tokens (code delivered directly) | ~15,000+ tokens (metadata + file reads) |
+
+**fittok's USP is token savings.** It returns the actual code in one call so the model doesn't need to read files. LSP-based tools return metadata (symbol names, reference lists) — precise, but the model still has to open the files to see the implementation. More round-trips, more tokens.
+
+**The tradeoff:** tree-sitter can't resolve cross-file references as accurately as LSP (a `fetch("/api/run")` call in a .tsx file won't perfectly link to the route handler). fittok compensates with 4-signal retrieval (semantic + content-BM25 + structural summary-BM25 + PageRank, fused via RRF) and round-robin directory diversity — which cover the gap in practice.
+
+**Complementary, not competitive:** LSP-based tools like [Serena](https://github.com/oraios/serena) excel at symbol-level navigation ("find all callers of `runSandboxQuery`"). fittok excels at semantic retrieval ("how does SQL execution work?"). Install both — the model picks the right tool per task.
+
+---
+
 ## Token savings — honest numbers
 
 On a real Next.js/TS repo (~5k functions), fittok returns a **~1.5–3.5k-token
@@ -275,8 +297,9 @@ Full reference: **[docs/HANDBOOK.md](https://github.com/likhithreddy/fittok/blob
 
 ## Requirements
 
-Python ≥ 3.10. First run downloads a ~90 MB embedding model. Optional extras:
-- `uv pip install "fittok[ui]"` — graph visualizer (`fittok graph`)
+Python ≥ 3.10. First run downloads a ~90 MB embedding model. Graph visualization
+(`fittok graph`) is included by default. Optional extras:
+- `uv pip install "fittok[ui]"` — Gradio web dashboard (`launch_ui` tool)
 - `uv pip install "fittok[gpu]"` — torch/CUDA for GPU-accelerated embeddings
 
 ## License
