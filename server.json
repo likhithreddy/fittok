@@ -3,12 +3,12 @@
   "name": "io.github.likhithreddy/fittok",
   "title": "fittok",
   "description": "Retrieve only the relevant code for a codebase question, within a token budget.",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "fittok",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "transport": { "type": "stdio" }
     }
   ]

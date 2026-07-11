@@ -200,29 +200,57 @@ def summary_bm25_scores(nodes, query, by_source, by_target) -> dict[str, float]:
     return {nodes[i].id: float(raw_scores[i]) for i in range(len(nodes))}
 
 
-def generate_codebase_map(graph, max_tokens: int = 500) -> str:
-    """Generate a compact codebase table-of-contents from the knowledge graph.
+def _extract_purpose(content: str) -> str:
+    """Extract a one-line purpose from a node's docstring/JSDoc/comment."""
+    if not content:
+        return ""
+    # JSDoc: /** ... */
+    m = re.search(r'/\*\*\s*(.+?)\*/', content, re.DOTALL)
+    if m:
+        text = re.sub(r'^\s*\*\s?', '', m.group(1), flags=re.MULTILINE).strip()
+        first = text.split('.')[0].strip()
+        if first and len(first) > 5:
+            return first[:150]
+    # Python docstring
+    m = re.search(r'"""(.+?)"""', content, re.DOTALL)
+    if m:
+        first = m.group(1).strip().split('\n')[0].strip()
+        if first and len(first) > 5:
+            return first[:150]
+    # Leading // comment
+    m = re.match(r'\s*//\s*(.+)', content)
+    if m:
+        return m.group(1).strip()[:150]
+    return ""
 
-    Groups functions/classes by file, lists them with line numbers. This is the
-    'map' the model reads to route its queries — inspired by Karpathy's LLM Wiki
-    and Google's Open Knowledge Format (OKF). If the code slice misses a file,
-    the model sees it in the map and can make a precise follow-up call.
+
+def generate_codebase_map(graph, max_tokens: int = 800) -> str:
+    """Generate a compact codebase table-of-contents with PURPOSE descriptions.
+
+    Lists functions/classes by file with their docstrings (human-written
+    descriptions). This is the 'map' the model reads to route its queries —
+    inspired by Karpathy's LLM Wiki and Google's OKF. If the code slice misses
+    a file, the model sees it in the map (with its purpose) and can make a
+    precise follow-up call.
     """
     by_file: dict[str, list] = defaultdict(list)
     for n in graph.nodes:
         if n.type.value not in ("file", "module") and n.name:
             by_file[n.file].append(n)
-    lines = ["## Codebase map (key entry points)\n"]
+    lines = ["## Codebase map (functions + purpose)\n"]
     tokens = count_tokens(lines[0])
     for file_path in sorted(by_file):
         nodes = sorted(by_file[file_path], key=lambda n: n.line_start)
-        funcs = ", ".join(f"{n.name}:L{n.line_start}" for n in nodes[:6])
-        entry = f"- `{file_path}`: {funcs}"
-        t = count_tokens(entry)
-        if tokens + t > max_tokens:
-            break
-        lines.append(entry)
-        tokens += t
+        for n in nodes[:3]:  # top 3 per file (purpose lines are token-expensive)
+            purpose = _extract_purpose(n.content or "")
+            entry = f"- `{n.name}` ({file_path}:L{n.line_start})"
+            if purpose:
+                entry += f" — {purpose}"
+            t = count_tokens(entry)
+            if tokens + t > max_tokens:
+                return "\n".join(lines)
+            lines.append(entry)
+            tokens += t
     return "\n".join(lines)
 
 
@@ -326,6 +354,22 @@ def _compute_combined_scores(
     }
 
 
+def _dir_of(file_path: str) -> str:
+    """Extract the directory for MMR diversity (e.g. 'lib/auth/server.ts' → 'lib/auth')."""
+    parts = file_path.rsplit("/", 1)
+    return parts[0] if len(parts) > 1 else file_path
+
+
+# MMR diversity: penalize selecting multiple nodes from the same directory so
+# the slice spans multiple code areas (execution + rendering + isolation) instead
+# of clustering in one dominant area (e.g. auth). λ=0.7 means 70% relevance,
+# 30% diversity — enough to surface a facet-2 node before a facet-1 node #4.
+MMR_LAMBDA = 0.7
+MMR_DIR_PENALTY = 0.35  # per same-dir node already selected
+MAX_PER_DIR = 3  # hard cap: forces facet coverage on multi-aspect queries
+MAX_NODE_BUDGET_RATIO = 0.25  # no single node eats more than 25% of the budget
+
+
 def _select_nodes(
     nodes: list,
     edges: list,
@@ -333,66 +377,66 @@ def _select_nodes(
     token_budget: int,
     eligible_ids: set | None = None,
 ) -> list:
-    """Greedy selection by combined score, capped by *both* the token budget and
-    an *eligibility set* (the relevance cliff).
+    """Greedy selection with MMR (Maximal Marginal Relevance) diversity.
 
-    eligible_ids is the key anti-over-selection guard: only those nodes can be
-    selected, so we stop at the genuinely-relevant cluster instead of padding the
-    budget with weakly-related noise. Ranking still uses the combined score;
-    eligibility is gated on raw semantic relevance (computed by the caller).
+    Picks the highest-scoring eligible node, then for each subsequent pick,
+    penalizes nodes from directories already represented. This forces the slice
+    to span multiple code areas (execution, rendering, isolation) instead of
+    clustering in one dominant area (e.g. auth — which structurally out-ranks
+    everything for any query containing "user").
     """
     node_map = {n.id: n for n in nodes}
     adj = _build_adjacency(nodes, edges)
 
-    # Only eligible nodes (above the relevance cliff) are ever selectable.
     if eligible_ids is None:
         eligible = dict(scores)
     else:
         eligible = {nid: s for nid, s in scores.items() if nid in eligible_ids}
-    ranked = sorted(eligible.items(), key=lambda x: x[1], reverse=True)
 
     selected_ids: set[str] = set()
     selected_nodes: list = []
     tokens_used = 0
     boost_accumulator: dict[str, float] = defaultdict(float)
+    dir_counts: dict[str, int] = defaultdict(int)  # MMR: per-directory selection count
 
-    for nid, score in ranked:
-        if tokens_used >= token_budget:
-            break
-        if nid in selected_ids:
-            continue
+    # Round-robin directory interleaving: pick the best node from EACH directory
+    # before any directory gets a second. This GUARANTEES facet coverage on
+    # multi-aspect queries — runSandboxQuery (top of lib/sandbox/) is picked in
+    # round 1 alongside getCurrentUser (top of lib/auth/), instead of being
+    # crowded out by auth's higher raw scores. MAX_PER_DIR caps depth.
+    dir_queues: dict[str, list] = defaultdict(list)
+    for nid, score in sorted(eligible.items(), key=lambda x: x[1], reverse=True):
         node = node_map.get(nid)
-        if node is None:
-            continue
-        # Reuse the token_count stored at parse time (re-encoding via tiktoken on
-        # every candidate is pure recomputation). Fall back only when unset.
-        node_tokens = node.token_count or (count_tokens(node.content) if node.content else count_tokens(node.name) + 10)
-        if tokens_used + node_tokens > token_budget:
-            continue
-        selected_ids.add(nid)
-        selected_nodes.append(node)
-        tokens_used += node_tokens
-        for neighbor_id in adj.get(nid, set()):
-            if neighbor_id not in selected_ids:
-                boost_accumulator[neighbor_id] += NEIGHBOR_DECAY * score
+        if node:
+            dir_queues[_dir_of(node.file)].append((nid, score, node))
 
-    # Re-order remaining ELIGIBLE nodes by boosted score, fill leftover budget.
-    boosted = {nid: eligible[nid] + boost_accumulator.get(nid, 0.0)
-               for nid in eligible if nid not in selected_ids}
-    for nid, _s in sorted(boosted.items(), key=lambda x: x[1], reverse=True):
-        if tokens_used >= token_budget:
+    while tokens_used < token_budget:
+        picked_any = False
+        max_node_tokens = int(token_budget * MAX_NODE_BUDGET_RATIO)
+        # Each round: pick one node from each directory (highest-scored first)
+        for d in sorted(dir_queues, key=lambda dd: dir_queues[dd][0][1] if dir_queues[dd] else 0, reverse=True):
+            if not dir_queues[d] or dir_counts[d] >= MAX_PER_DIR:
+                continue
+            nid, score, node = dir_queues[d].pop(0)
+            if nid in selected_ids:
+                continue
+            node_tokens = node.token_count or (count_tokens(node.content) if node.content else count_tokens(node.name) + 10)
+            # Per-node cap: skip nodes that would eat >25% of budget (large page
+            # components crowd out smaller but equally relevant functions).
+            if node_tokens > max_node_tokens:
+                continue
+            if tokens_used + node_tokens > token_budget:
+                continue
+            selected_ids.add(nid)
+            selected_nodes.append(node)
+            tokens_used += node_tokens
+            dir_counts[d] += 1
+            for neighbor_id in adj.get(nid, set()):
+                if neighbor_id not in selected_ids:
+                    boost_accumulator[neighbor_id] += NEIGHBOR_DECAY * score
+            picked_any = True
+        if not picked_any:
             break
-        node = node_map.get(nid)
-        if node is None:
-            continue
-        # Reuse the token_count stored at parse time (re-encoding via tiktoken on
-        # every candidate is pure recomputation). Fall back only when unset.
-        node_tokens = node.token_count or (count_tokens(node.content) if node.content else count_tokens(node.name) + 10)
-        if tokens_used + node_tokens > token_budget:
-            continue
-        selected_ids.add(nid)
-        selected_nodes.append(node)
-        tokens_used += node_tokens
 
     return selected_nodes
 
