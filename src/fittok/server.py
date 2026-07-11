@@ -385,21 +385,7 @@ def _select_readable_context(graph, query: str, token_budget: int, codebase_key:
     else:
         exclude = None
 
-    # Build the routing map + authority note FIRST so we can reserve their token
-    # cost as headroom. Without this, the code slice is capped at the budget and
-    # then ~500-600 tokens of map+note are appended on top — pushing the TOTAL
-    # well past the budget and over Copilot's inline-output threshold (which
-    # triggers the content.json cache + re-Read that discards the savings).
-    from .slurp import generate_codebase_map, ADAPTIVE_MIN
-    codebase_map = generate_codebase_map(graph)
-    prefix = _AUTHORITY_NOTE + codebase_map + "\n\n---\n\n"
-    overhead = count_tokens(prefix)
-    # Explicit budget: reserve headroom so the TOTAL (prefix + code) respects
-    # the request, floored so a large map can't starve the code. Adaptive (0):
-    # leave to query_graph — ADAPTIVE_MAX already leaves room for the map.
-    code_budget = max(token_budget - overhead, ADAPTIVE_MIN) if token_budget > 0 else 0
-
-    q = _query_graph(graph, query, code_budget, with_diagnostics=True, exclude_ids=exclude)
+    q = _query_graph(graph, query, token_budget, with_diagnostics=True, exclude_ids=exclude)
     if codebase_key:
         # Dedup BOTH query-selected nodes and surfaced dependencies, so a
         # repeated/fanned-out query never re-sends code already returned.
@@ -412,7 +398,13 @@ def _select_readable_context(graph, query: str, token_budget: int, codebase_key:
     # within budget. A truncate_to_tokens call here would slice the last
     # function in half, which is exactly what forced the model to re-open the
     # file (via `nl -ba | sed`) to see the rest of the cut-off body.
-    readable = prefix + readable
+    # Prepend the authority note + codebase map. MAX_BUDGET (1600) is sized to
+    # leave room for these (~560 tok) so the TOTAL output stays under Copilot's
+    # ~10 KB MCP truncation wall (copilot-cli#1732) — over it, the host chops
+    # the tail and the model sees "elided" bodies → escalation + re-reads.
+    from .slurp import generate_codebase_map
+    codebase_map = generate_codebase_map(graph)
+    readable = _AUTHORITY_NOTE + codebase_map + "\n\n---\n\n" + readable
     tokens_sent = count_tokens(readable)
     stats = {
         "selected_nodes": q["selected_nodes"],
