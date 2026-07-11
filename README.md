@@ -23,12 +23,23 @@ codebase ──▶ graphify ──▶ slurp ──▶ readable slice ──▶ L
 
 1. **graphify** — parses the repo with tree-sitter into a knowledge graph of
    functions / classes / methods (Python, JS, JSX, TS, TSX, Java, Go, Rust).
-2. **slurp** — scores every node against the question with **semantic embeddings
-   + TF-IDF + PageRank**, then selects *only* the genuinely relevant nodes via a
-   relevance cliff (no budget-padding with noise).
-3. **readable output** — returns the **actual source code** of those nodes,
-   top-ranked in full and the supporting tail as signatures, trimmed to a budget.
-   The model answers directly from it.
+   Supports multi-language call/import/reference edges.
+2. **slurp** — scores every node against the question using a **4-signal hybrid**:
+   - **Semantic embeddings** (all-MiniLM-L6-v2) — meaning-based matching
+   - **Content-BM25** (with camelCase/snake_case splitting) — keyword matching
+   - **Summary-BM25** (node name + file + callers + callees) — structural matching
+   - **PageRank** — graph centrality / hub detection
+
+   Signals are fused via **Reciprocal Rank Fusion (RRF)** — rank-based, no score
+   calibration issues. Nodes are selected via **round-robin directory interleaving**
+   (guarantees facet coverage on multi-aspect queries — one node from each code
+   area before any gets a second) with a **per-node token cap** (25% of budget, so
+   large components don't crowd out smaller functions). A **relevance cliff**
+   (semantic OR BM25 OR summary-BM25 threshold) excludes noise.
+3. **readable output** — returns the **actual source code** of selected nodes,
+   plus a **codebase map** (table of contents with docstrings, inspired by
+   Karpathy's LLM Wiki / Google's OKF) so the model can route follow-up calls
+   precisely. The model answers directly from it — no file reads needed.
 
 As you edit, a file watcher (auto-started on first query) updates the graph
 **incrementally** — only changed files are re-parsed and merged, and only
@@ -42,26 +53,29 @@ which case an edit triggers a full re-parse on the next query.
 
 ### Ask focused questions
 
-fittok ranks code against your question by **semantic similarity**. It's most
-accurate with **focused, specific questions** — ideally one concern each, and
-naming the function/component/route when you can.
+fittok ranks code against your question using a **4-signal hybrid** (semantic +
+BM25 + structural + PageRank, fused via RRF) with **round-robin directory
+diversity** — so multi-facet questions surface code from multiple areas (UI,
+server, database) instead of clustering in one dominant area. It's most accurate
+with **focused, specific questions** — ideally one concern each, and naming the
+function/component/route when you can. Multi-facet questions are supported via
+**decomposition** (the tool description tells the model to call once per aspect)
+and the **codebase map** (a table of contents prepended to every response).
 
 - ✅ *"How does `runSandboxQuery` execute and isolate a SQL query?"* → surfaces the exact function + its isolation code.
 - ✅ *"How does the querydle client submit a query and render results?"* → surfaces the UI component.
-- ⚠️ *"Trace the full feature end-to-end — UI, routes, streaming, auth, and DB isolation"* → one embedding tries to cover many concerns; the most "popular" concern (often auth/utilities) can dominate the ranking and crowd out the part you care about. If the slice misses the file you need, the model will (correctly) read it — so you lose the token savings.
+- ✅ *"Trace the full lifecycle: UI submission, sandbox execution, data isolation"* → decomposition + round-robin diversity covers multiple facets; the codebase map routes the model to any missed files.
 
 **Rule of thumb:** one concern per question (or 2–3 facets max). For "explain
 the whole feature," split it into a few focused questions instead of one mega-query.
 
 ### Known limitations
 
-- **Broad / abstract multi-facet queries can miss the key file.** The embedding model has a ceiling matching code to vague natural language — a key function with a generic name can rank below a semantically-adjacent utility. Mitigation: focused queries, or name the symbol. (A stronger/code-tuned embedding model, set via `FITTOK_EMBED_MODEL`, is the lever to push past this.)
+- **Vocabulary gap on abstract queries.** When the query uses words that don't appear in the code (e.g. "isolation" → `REVOKE`/`DENY`), neither semantic nor BM25 can bridge it. The codebase map (which lists file names + docstrings) and round-robin diversity help, but the model may still read 1–2 files for these facets. Mitigation: name the function/file, or the codebase map routes the model to it.
+- **Copilot's "verify by reading" habit.** Even when fittok returns the full code, Copilot's model sometimes reads the file to confirm. This is model behavior, not a fittok limitation — a strong `.github/copilot-instructions.md` saying *"do not Read files that appear in fittok's output"* reduces it.
 - **Incremental edge-loss:** editing a file can drop call/import edges *into* it from unchanged files until a full re-parse. fittok auto-recovers on restart or `reset_graph`.
 - **Token budgets are approximate:** counts use `cl100k_base`, so real usage drifts ~10–20% vs Claude's tokenizer (headroom is built into the budget constants).
 - **Very large repos:** PageRank is not yet vectorized — fine through low-thousands of nodes, slower beyond that.
-
-None of these block normal use; focused queries sidestep the first (the only one
-you're likely to feel).
 
 ---
 
