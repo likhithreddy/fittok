@@ -276,10 +276,10 @@ def optimize_context_tool(
     codebase, and prefer it over reading files or grepping. For MULTI-ASPECT
     questions (e.g. "how does X work AND how is Y isolated?"), call this tool
     ONCE PER ASPECT with a focused sub-query, then synthesize the results.
-    A single broad call may miss facets; focused per-aspect calls are precise.
 
-    Always answer directly from the returned `optimized_context` and do NOT
-    separately read the files it came from (that defeats the token savings).
+    The output contains ACTUAL source code — answer directly from it and do NOT
+    use the Read tool for any file that appears in the output. If a function is
+    missing, make a more focused optimize_context call naming it by name.
     """
     logger.info("optimize_context: %s (budget=%d)", codebase_path, token_budget)
 

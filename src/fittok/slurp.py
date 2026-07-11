@@ -602,8 +602,13 @@ SEMANTIC_CONFIDENCE_THRESHOLD = 0.15
 # this range. A hard MAX also caps explicit budgets so a stray huge value (e.g.
 # the model passing 64000) can't blow up context.
 ADAPTIVE_MIN = 600    # a 1-2 function answer should be able to come back this small
-ADAPTIVE_MAX = 3500   # keep each response small so even several calls stay bounded
-MAX_BUDGET = 4000     # (Claude Code spills >~10k tool results to disk → re-reads)
+ADAPTIVE_MAX = 3000   # keep each response small so even several calls stay bounded
+                      # AND under Copilot's inline-output threshold (larger outputs
+                      # get cached to files and truncated at 2000 chars/line)
+MAX_BUDGET = 3000     # Capped: Copilot caches large tool outputs to files and
+                      # truncates at 2000 chars/line. 3000 tokens (~12k chars)
+                      # keeps most responses small enough to stay inline in the
+                      # model's context instead of being destroyed by caching.
 # Relevance cliff on the RAW SEMANTIC cosine (the signal that actually
 # discriminates relevant from noise — unlike the combined score, which has a
 # floor from the near-uniform PageRank on a flat graph). A node is eligible if
