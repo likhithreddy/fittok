@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fittok"
-version = "0.8.4"
+version = "0.8.5"
 description = "MCP server that retrieves the most relevant source code for a query, within a token budget"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -47,6 +47,7 @@ dependencies = [
     "diskcache>=5.0",
     "watchdog>=3.0",
     "rank-bm25>=0.2.2",
+    "pyvis>=0.3",
 ]
 
 [project.optional-dependencies]
@@ -60,7 +61,6 @@ gpu = [
 ]
 ui = [
     "gradio>=4.0",
-    "pyvis>=0.3",
 ]
 
 [project.urls]

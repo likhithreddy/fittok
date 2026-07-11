@@ -89,9 +89,8 @@ def _cmd_graph(args) -> None:
         from pyvis.network import Network  # noqa: F401
     except ImportError:
         print(
-            "⚠  pyvis is required for graph visualization.\n"
-            "   Install it with:  uv pip install 'fittok[ui]'\n"
-            "   or:               pip install pyvis",
+            "⚠  pyvis is required for graph visualization (it's a default dependency —\n"
+            "   if missing, reinstall fittok:  uvx --refresh fittok).",
             file=sys.stderr,
         )
         sys.exit(1)
