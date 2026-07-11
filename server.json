@@ -4,6 +4,10 @@
   "title": "fittok",
   "description": "Retrieve only the relevant code for a codebase question, within a token budget.",
   "version": "0.8.1",
+  "repository": {
+    "url": "https://github.com/likhithreddy/fittok",
+    "source": "github"
+  },
   "packages": [
     {
       "registryType": "pypi",
