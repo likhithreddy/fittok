@@ -68,12 +68,13 @@ mcp = FastMCP(
         "Retrieves the most relevant REAL source code for a question about a "
         "codebase, within a token budget. Prefer `optimize_context` for "
         "'how does X work / where is Y' questions instead of reading files or "
-        "grepping. For MULTI-ASPECT questions (e.g. 'how does X work AND how "
-        "is Y isolated?'), call optimize_context ONCE PER ASPECT with a focused "
-        "sub-query, then synthesize the results — a single broad call may miss "
-        "facets. Always answer directly from the returned `optimized_context` "
-        "and do NOT separately read the files it came from, as that negates the "
-        "token savings."
+        "grepping. For MULTI-ASPECT questions make AT MOST 2–3 focused calls "
+        "total (one per facet), then synthesize and answer — do not re-query "
+        "the same file at a higher budget. Every line in the output is numbered "
+        "with its real source line, so answer directly from `optimized_context` "
+        "and cite file:line from the numbers shown; do NOT separately Read (or "
+        "`nl`/`sed`) the files it came from — their bodies are already complete "
+        "and line-anchored here, so re-reading only adds cost."
     ),
 )
 
@@ -273,13 +274,19 @@ def optimize_context_tool(
     """Return the most relevant REAL source code for a question, within a token budget.
 
     Use this FIRST for any "how does X work / where is Y" question about the
-    codebase, and prefer it over reading files or grepping. For MULTI-ASPECT
-    questions (e.g. "how does X work AND how is Y isolated?"), call this tool
-    ONCE PER ASPECT with a focused sub-query, then synthesize the results.
+    codebase, and prefer it over reading files or grepping.
 
-    The output contains ACTUAL source code — answer directly from it and do NOT
-    use the Read tool for any file that appears in the output. If a function is
-    missing, make a more focused optimize_context call naming it by name.
+    For a MULTI-ASPECT question, make AT MOST 2–3 focused calls TOTAL (one per
+    facet), then synthesize and answer — do NOT fan out further. Do NOT re-query
+    the same file at a higher token_budget: if a function body is missing, make
+    ONE more call that names the function explicitly, then stop. Re-fetching what
+    you already have discards the savings this tool exists to provide.
+
+    The output contains ACTUAL source code with every line numbered by its real
+    source line — answer directly from it and cite file:line from the numbers
+    shown. Do NOT use the Read tool (or `nl`/`sed`) for any file that appears in
+    the output: the bodies are already complete and line-anchored, so reading
+    them again adds nothing but cost.
     """
     logger.info("optimize_context: %s (budget=%d)", codebase_path, token_budget)
 
@@ -351,9 +358,12 @@ def _record_returned(key: str, ids: list) -> None:
 # a tool description the client may not surface. This is the in-output lever that
 # replaces the (ineffective, repo-polluting) INSTRUCTIONS.md idea.
 _AUTHORITY_NOTE = (
-    "> **This is the real source for your question** — answer directly from the "
-    "code below. Re-opening these files discards the token savings this tool "
-    "exists to provide, so don't re-read them.\n\n"
+    "> **This is the complete, real source for your question.** Every line below "
+    "is numbered with its actual source line, so cite `file:line` directly from "
+    "the numbers shown. Answer from the code below — re-opening these files "
+    "(Read, grep, or `nl`/`sed`) only discards the token savings: the function "
+    "bodies are already whole and line-anchored here, so reading them again "
+    "adds nothing but cost.\n\n"
 )
 
 
@@ -366,7 +376,7 @@ def _select_readable_context(graph, query: str, token_budget: int, codebase_key:
     When codebase_key is given, nodes returned by recent calls are excluded so
     repeated/fanned-out queries don't re-send the same code.
     """
-    from .tokens import count_tokens, truncate_to_tokens
+    from .tokens import count_tokens
     if codebase_key:
         # Copy under the lock — a concurrent _record_returned can append/trim the
         # list mid-iteration (RuntimeError) or corrupt the fan-out dedup.
@@ -374,23 +384,35 @@ def _select_readable_context(graph, query: str, token_budget: int, codebase_key:
             exclude = set(_RECENT_RETURNED.get(codebase_key, []))
     else:
         exclude = None
-    q = _query_graph(graph, query, token_budget, with_diagnostics=True, exclude_ids=exclude)
+
+    # Build the routing map + authority note FIRST so we can reserve their token
+    # cost as headroom. Without this, the code slice is capped at the budget and
+    # then ~500-600 tokens of map+note are appended on top — pushing the TOTAL
+    # well past the budget and over Copilot's inline-output threshold (which
+    # triggers the content.json cache + re-Read that discards the savings).
+    from .slurp import generate_codebase_map, ADAPTIVE_MIN
+    codebase_map = generate_codebase_map(graph)
+    prefix = _AUTHORITY_NOTE + codebase_map + "\n\n---\n\n"
+    overhead = count_tokens(prefix)
+    # Explicit budget: reserve headroom so the TOTAL (prefix + code) respects
+    # the request, floored so a large map can't starve the code. Adaptive (0):
+    # leave to query_graph — ADAPTIVE_MAX already leaves room for the map.
+    code_budget = max(token_budget - overhead, ADAPTIVE_MIN) if token_budget > 0 else 0
+
+    q = _query_graph(graph, query, code_budget, with_diagnostics=True, exclude_ids=exclude)
     if codebase_key:
         # Dedup BOTH query-selected nodes and surfaced dependencies, so a
         # repeated/fanned-out query never re-sends code already returned.
         _record_returned(codebase_key, q.get("selected_ids", []) + q.get("neighbor_ids", []))
     eff_budget = q.get("budget", token_budget) or 0
     readable = q["markdown"]
-    if eff_budget > 0 and count_tokens(readable) > eff_budget:
-        readable = truncate_to_tokens(readable, eff_budget)
-    # Prepend AFTER truncation so the note is never cut, and so the instruction
-    # sits directly above the code the model is about to reason over.
-    # The codebase map (Karpathy LLM Wiki / OKF inspired) gives the model a
-    # table-of-contents so it can make precise follow-up calls if the slice
-    # missed a file — instead of reading blindly.
-    from .slurp import generate_codebase_map
-    codebase_map = generate_codebase_map(graph)
-    readable = _AUTHORITY_NOTE + codebase_map + "\n\n---\n\n" + readable
+    # NOTE: no mid-body truncation here. slurp.format_subgraph already enforces
+    # the budget at NODE boundaries (whole functions only) and the referenced-
+    # dependency lines are whole — so q["markdown"] is node-boundary-clean and
+    # within budget. A truncate_to_tokens call here would slice the last
+    # function in half, which is exactly what forced the model to re-open the
+    # file (via `nl -ba | sed`) to see the rest of the cut-off body.
+    readable = prefix + readable
     tokens_sent = count_tokens(readable)
     stats = {
         "selected_nodes": q["selected_nodes"],

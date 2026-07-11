@@ -224,7 +224,7 @@ def _extract_purpose(content: str) -> str:
     return ""
 
 
-def generate_codebase_map(graph, max_tokens: int = 800) -> str:
+def generate_codebase_map(graph, max_tokens: int = 500) -> str:
     """Generate a compact codebase table-of-contents with PURPOSE descriptions.
 
     Lists functions/classes by file with their docstrings (human-written
@@ -367,7 +367,13 @@ def _dir_of(file_path: str) -> str:
 MMR_LAMBDA = 0.7
 MMR_DIR_PENALTY = 0.35  # per same-dir node already selected
 MAX_PER_DIR = 3  # hard cap: forces facet coverage on multi-aspect queries
-MAX_NODE_BUDGET_RATIO = 0.25  # no single node eats more than 25% of the budget
+# A selected node is always returned WHOLE (budget controls HOW MANY nodes, not
+# how much of each). The cap only guards against one pathological giant eating
+# the entire budget — set at 60% so a normal 90-line route handler (~600-800
+# tokens) fits at a 1500-2500 token budget and is no longer SKIPPED (the old
+# 0.25 cap excluded exactly these handlers, which is what forced the model to
+# re-query at ever-higher budgets: 1800 → 2200 → 2600).
+MAX_NODE_BUDGET_RATIO = 0.6
 
 
 def _select_nodes(
@@ -421,8 +427,10 @@ def _select_nodes(
             if nid in selected_ids:
                 continue
             node_tokens = node.token_count or (count_tokens(node.content) if node.content else count_tokens(node.name) + 10)
-            # Per-node cap: skip nodes that would eat >25% of budget (large page
-            # components crowd out smaller but equally relevant functions).
+            # Per-node cap: only guards against one pathological giant eating the
+            # whole budget. At 0.6, a normal handler fits and is included whole —
+            # we never skip a relevant handler just for being long (that was the
+            # cause of the budget-escalation re-query loop).
             if node_tokens > max_node_tokens:
                 continue
             if tokens_used + node_tokens > token_budget:
@@ -547,8 +555,26 @@ def _node_signature(content: str) -> str:
     return ""
 
 
+def _number_lines(content: str, start_line: int) -> str:
+    """Prefix each line with its REAL source line number, ``nl``-style, so the
+    model can cite ``file:line`` directly from the output.
+
+    This is the fix for the re-read loop we saw in Copilot: the model ran
+    ``nl -ba <file> | sed`` to recover line anchors for its citations because
+    the returned code had none. Numbering starts at the node's ``line_start``
+    so the numbers match what the model sees in its editor / Read tool — the
+    anchor is already in the output, so re-opening the file adds nothing.
+    """
+    if not content:
+        return content
+    return "\n".join(
+        f"{start_line + i}: {line}" for i, line in enumerate(content.splitlines())
+    )
+
+
 def _format_node(node, full: bool) -> str:
-    """Format a node as markdown. *full* → whole body; else signature-only."""
+    """Format a node as markdown. *full* → whole body (line-numbered); else
+    signature-only (also line-numbered, for citation)."""
     import os
     _, ext = os.path.splitext(node.file)
     lang = _LANG_FROM_EXT.get(ext, "")
@@ -563,28 +589,54 @@ def _format_node(node, full: bool) -> str:
     if not node.content:
         body = f"*({node.type.value} — no content stored)*"
     elif full:
-        body = f"```{lang}\n{node.content}\n```"
+        body = f"```{lang}\n{_number_lines(node.content, node.line_start)}\n```"
     else:
-        # Supporting node: declaration only, so the model knows it exists + where.
-        body = f"```{lang}\n{_node_signature(node.content)}  // …\n```"
+        # Supporting node: declaration only, with its line number for citation.
+        body = f"```{lang}\n{node.line_start}: {_node_signature(node.content)}  // …\n```"
     return f"{header}\n\n{body}"
 
 
 def format_subgraph(nodes: list, token_budget: int) -> str:
-    """Format selected nodes into markdown, full detail for the top nodes and
-    signature-only for the supporting tail (keeps the slice small + readable)."""
+    """Format selected nodes into markdown within *token_budget*, NEVER cutting a
+    node mid-body.
+
+    Full detail for the top nodes; signature-only for the supporting tail. The
+    budget controls HOW MANY nodes appear, not how much of each — a selected
+    node is always included whole. This is the fix for the mid-body truncation
+    that left handlers cut off and forced the model to re-open the file to see
+    the rest. The first node is always shown (even if slightly over) so the
+    slice is never empty; after that, when the next whole node won't fit, we
+    stop rather than slicing it.
+    """
     full_ids = {n.id for n in nodes[:FULL_DETAIL_NODES]}
 
     by_file: dict[str, list] = defaultdict(list)
     for n in nodes:
         by_file[n.file].append(n)
 
-    parts: list[str] = ["## Relevant code\n"]
+    header = "## Relevant code\n"
+    parts: list[str] = [header]
+    # No budget → include everything (e.g. the CLI `--json` / graph paths).
+    budget_left = (token_budget - count_tokens(header)) if token_budget > 0 else 1 << 30
+    shown_any = False
+
     for filepath in by_file:  # insertion order = relevance order, not alphabetical
-        parts.append(f"\n#### {filepath}\n")
+        file_header = f"\n#### {filepath}\n"
+        ht = count_tokens(file_header)
+        if ht > budget_left and shown_any:
+            break
+        parts.append(file_header)
+        budget_left -= ht
         for node in by_file[filepath]:
-            parts.append(_format_node(node, full=node.id in full_ids))
-            parts.append("")
+            node_md = _format_node(node, full=node.id in full_ids) + "\n"
+            nt = count_tokens(node_md)
+            # Stop at a node boundary — never cut a function mid-body. The first
+            # node is force-included so the slice is never empty.
+            if shown_any and nt > budget_left:
+                return "\n".join(parts)
+            parts.append(node_md)
+            budget_left -= nt
+            shown_any = True
 
     return "\n".join(parts)
 
@@ -602,11 +654,13 @@ SEMANTIC_CONFIDENCE_THRESHOLD = 0.15
 # this range. A hard MAX also caps explicit budgets so a stray huge value (e.g.
 # the model passing 64000) can't blow up context.
 ADAPTIVE_MIN = 600    # a 1-2 function answer should be able to come back this small
-ADAPTIVE_MAX = 3000   # keep each response small so even several calls stay bounded
-                      # AND under Copilot's inline-output threshold (larger outputs
-                      # get cached to files and truncated at 2000 chars/line)
-MAX_BUDGET = 3000     # Capped: Copilot caches large tool outputs to files and
-                      # truncates at 2000 chars/line. 3000 tokens (~12k chars)
+ADAPTIVE_MAX = 2000   # Bounds the CODE slice; the codebase map + authority note
+                      # (~500-600 tokens) are appended on top, so ~2000 + map keeps
+                      # the TOTAL output near MAX_BUDGET (2500) — under Copilot's
+                      # inline-output threshold instead of being cached to
+                      # content.json and re-Read (which discards the savings).
+MAX_BUDGET = 2500     # Capped: Copilot caches large tool outputs to files and
+                      # truncates at 2000 chars/line. 2500 tokens (~10k chars)
                       # keeps most responses small enough to stay inline in the
                       # model's context instead of being destroyed by caching.
 # Relevance cliff on the RAW SEMANTIC cosine (the signal that actually
