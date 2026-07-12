@@ -6,7 +6,7 @@ Usable three ways, each standalone:
   - As an MCP server: ``python -m fittok`` (for AI clients)
 """
 
-__version__ = "0.9.3"
+__version__ = "0.10.0"
 
 __all__ = ["optimize", "index", "__version__"]
 

@@ -7,6 +7,7 @@ then formats them as markdown within the specified token limit.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections import defaultdict
 
@@ -475,6 +476,13 @@ def _select_nodes(
     else:
         eligible = {nid: s for nid, s in scores.items() if nid in eligible_ids}
 
+    # Unlimited mode (default, token_budget <= 0): return ALL eligible nodes by
+    # score — complete, accurate info, no token/dir/per-node capping. Capping is
+    # now OPT-IN (FITTOK_MAX_BUDGET env or an explicit token_budget), kept solely
+    # as a workaround for clients that truncate large outputs (Copilot).
+    if token_budget <= 0:
+        return [node_map[nid] for nid, _ in sorted(eligible.items(), key=lambda x: x[1], reverse=True) if nid in node_map]
+
     selected_ids: set[str] = set()
     selected_nodes: list = []
     tokens_used = 0
@@ -673,26 +681,20 @@ def _format_node(node, full: bool) -> str:
 
 
 def format_subgraph(nodes: list, token_budget: int) -> str:
-    """Format selected nodes into markdown within *token_budget*, NEVER cutting a
-    node mid-body.
+    """Format selected nodes as markdown, every node in FULL (line-numbered).
 
-    Full detail for the top nodes; signature-only for the supporting tail. The
-    budget controls HOW MANY nodes appear, not how much of each — a selected
-    node is always included whole. This is the fix for the mid-body truncation
-    that left handlers cut off and forced the model to re-open the file to see
-    the rest. The first node is always shown (even if slightly over) so the
-    slice is never empty; after that, when the next whole node won't fit, we
-    stop rather than slicing it.
+    Capping is opt-in now: with token_budget <= 0 (the default) ALL selected
+    nodes render in full — no FULL_DETAIL_NODES ceiling, no mid-body stop — so
+    the model gets complete, accurate code. A positive token_budget (opt-in cap
+    for truncating clients) stops at node boundaries, never slicing a function.
     """
-    full_ids = {n.id for n in nodes[:FULL_DETAIL_NODES]}
-
     by_file: dict[str, list] = defaultdict(list)
     for n in nodes:
         by_file[n.file].append(n)
 
     header = "## Relevant code\n"
     parts: list[str] = [header]
-    # No budget → include everything (e.g. the CLI `--json` / graph paths).
+    # No budget → include everything (default: complete results).
     budget_left = (token_budget - count_tokens(header)) if token_budget > 0 else 1 << 30
     shown_any = False
 
@@ -704,11 +706,10 @@ def format_subgraph(nodes: list, token_budget: int) -> str:
         parts.append(file_header)
         budget_left -= ht
         for node in by_file[filepath]:
-            node_md = _format_node(node, full=node.id in full_ids) + "\n"
+            node_md = _format_node(node, full=True) + "\n"  # always full body
             nt = count_tokens(node_md)
-            # Stop at a node boundary — never cut a function mid-body. The first
-            # node is force-included so the slice is never empty.
-            if shown_any and nt > budget_left:
+            # Capped mode only: stop at a node boundary — never cut mid-body.
+            if shown_any and token_budget > 0 and nt > budget_left:
                 return "\n".join(parts)
             parts.append(node_md)
             budget_left -= nt
@@ -730,19 +731,14 @@ SEMANTIC_CONFIDENCE_THRESHOLD = 0.15
 # this range. A hard MAX also caps explicit budgets so a stray huge value (e.g.
 # the model passing 64000) can't blow up context.
 ADAPTIVE_MIN = 600    # a 1-2 function answer should be able to come back this small
-ADAPTIVE_MAX = 1200   # Ceiling on the CODE slice. The REAL Copilot limit (verified
-                      # from a captured content.json): MCP outputs above ~7-8 KB get
-                      # cached to content.json, where the ENTIRE markdown collapses
-                      # to ONE physical JSON line (newlines escaped) — and Copilot's
-                      # Read tool truncates any line at ~2000 chars. So a cached
-                      # output is effectively chopped to ~2000 chars regardless of
-                      # total size; the model can't see code past that mark. Staying
-                      # UNDER ~7 KB keeps the output INLINE (real newlines, fully
-                      # visible). 1200 code + map + flow + note ≈ 6.4 KB total.
-MAX_BUDGET = 1200     # Hard cap on the CODE slice, for the same inline-delivery
-                      # reason. Returning more just pushes the total over the cache
-                      # threshold and gets it collapsed+truncated — so a smaller,
-                      # fully-visible slice beats a larger, invisible one.
+ADAPTIVE_MAX = 1200   # (legacy) used only when capping is explicitly opted into
+MAX_BUDGET = 1200     # (legacy) ditto
+# Capping is OFF by default — fittok returns ALL relevant nodes in full for
+# complete, accurate results. Opt back in ONLY for clients that truncate large
+# MCP outputs (Copilot caches >~7 KB to content.json and chops it to ~2000
+# chars). Set FITTOK_MAX_BUDGET=N (code-token cap) to re-enable capping
+# server-wide; or pass an explicit token_budget per call. 0 = unlimited.
+_ENV_MAX_BUDGET = int(os.environ.get("FITTOK_MAX_BUDGET", "0") or "0")
 # Relevance cliff on the RAW SEMANTIC cosine (the signal that actually
 # discriminates relevant from noise — unlike the combined score, which has a
 # floor from the near-uniform PageRank on a flat graph). A node is eligible if
@@ -767,20 +763,19 @@ def _eligible_ids(relevance: dict[str, float]) -> set:
 
 
 def _resolve_budget(token_budget: int, nodes: list, eligible_ids: set) -> int:
-    """Compute the effective token budget.
+    """Effective token budget. 0 means UNLIMITED — return every eligible node.
 
-    token_budget > 0 → honor it, capped at MAX_BUDGET.
-    token_budget <= 0 → adaptive: exactly the tokens of the eligible (above-cliff)
-    nodes, clamped to [MIN, MAX]. The cliff already excludes the weakly-related
-    tail, so the budget self-sizes to the relevant cluster without padding.
+    Capping is opt-in (off by default), in this priority:
+      1. FITTOK_MAX_BUDGET env var (>0) — server-wide cap, the workaround for
+         clients that truncate large MCP outputs (Copilot). Overrides everything.
+      2. An explicit token_budget > 0 — per-call cap.
+      3. Otherwise 0 (unlimited) — complete, accurate results.
     """
+    if _ENV_MAX_BUDGET > 0:
+        return _ENV_MAX_BUDGET
     if token_budget > 0:
-        return min(token_budget, MAX_BUDGET)
-    total = 0
-    for n in nodes:
-        if n.id in eligible_ids:
-            total += count_tokens(n.content) if n.content else count_tokens(n.name) + 10
-    return max(ADAPTIVE_MIN, min(total, ADAPTIVE_MAX))
+        return token_budget
+    return 0  # unlimited
 
 
 def query_graph(
@@ -897,12 +892,16 @@ def query_graph(
     # that the selected code USES but that weren't themselves query-relevant
     # (below the cliff). This is the fix for the re-read problem — without it,
     # the model used to re-open the file to resolve an undefined MODEL_NAME.
-    # Capped to a fraction of the budget, with headroom for the low-conf banner.
-    neighbor_cap = max(150, min(
-        NEIGHBOR_MAX_TOKENS,
-        effective_budget - main_tokens - 64,
-        int(effective_budget * NEIGHBOR_BUDGET_FRACTION),
-    ))
+    # Unlimited mode: surface ALL referenced deps (complete info). Capped mode:
+    # a fraction of the budget, with headroom for the low-conf banner.
+    if effective_budget > 0:
+        neighbor_cap = max(150, min(
+            NEIGHBOR_MAX_TOKENS,
+            effective_budget - main_tokens - 64,
+            int(effective_budget * NEIGHBOR_BUDGET_FRACTION),
+        ))
+    else:
+        neighbor_cap = 1 << 30  # unlimited
     neighbor_nodes, deps_md = _select_neighbors(
         selected, graph.nodes, neighbor_cap,
         selected_ids={n.id for n in selected}, exclude_ids=exclude_ids,
@@ -933,7 +932,8 @@ def query_graph(
             "neighbor_nodes": len(neighbor_nodes),
             "tokens_used": tokens_used,
             "budget": effective_budget,
-            "budget_mode": "adaptive" if token_budget <= 0 else "explicit",
+            "budget_mode": ("env-capped" if _ENV_MAX_BUDGET > 0
+                            else ("explicit" if token_budget > 0 else "unlimited")),
             "method": method,
             "confidence": round(confidence, 4),
             "confidence_label": confidence_label,

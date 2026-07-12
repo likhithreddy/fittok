@@ -271,22 +271,19 @@ def optimize_context_tool(
     query: str,
     token_budget: int = 0,  # 0 = adaptive (auto-sized from relevance)
 ) -> dict:
-    """Return the most relevant REAL source code for a question, within a token budget.
+    """Return the most relevant REAL source code for a question — completely.
 
     Use this FIRST for any "how does X work / where is Y" question about the
     codebase, and prefer it over reading files or grepping.
 
-    For a MULTI-ASPECT question, make AT MOST 2–3 focused calls TOTAL (one per
-    facet), then synthesize and answer — do NOT fan out further. Do NOT re-query
-    the same file at a higher token_budget: if a function body is missing, make
-    ONE more call that names the function explicitly, then stop. Re-fetching what
-    you already have discards the savings this tool exists to provide.
+    Returns ALL relevant functions/classes in full (every line numbered with its
+    real source line), plus a flow trace and referenced dependencies — so answer
+    directly from the output and cite file:line from the numbers shown. Do NOT
+    re-read (Read/grep/`nl`) files that appear in the output: their bodies are
+    already complete here.
 
-    The output contains ACTUAL source code with every line numbered by its real
-    source line — answer directly from it and cite file:line from the numbers
-    shown. Do NOT use the Read tool (or `nl`/`sed`) for any file that appears in
-    the output: the bodies are already complete and line-anchored, so reading
-    them again adds nothing but cost.
+    token_budget defaults to 0 = return everything relevant (recommended). Set a
+    value ONLY to cap output size. (Server-wide cap: FITTOK_MAX_BUDGET env var.)
     """
     logger.info("optimize_context: %s (budget=%d)", codebase_path, token_budget)
 
