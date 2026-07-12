@@ -71,10 +71,15 @@ the whole feature," split it into a few focused questions instead of one mega-qu
 
 ### Known limitations
 
-- **Vocabulary gap on abstract queries.** When the query uses words that don't appear in the code (e.g. "isolation" → `REVOKE`/`DENY`), neither semantic nor BM25 can bridge it. The codebase map (which lists file names + docstrings) and round-robin diversity help, but the model may still read 1–2 files for these facets. Mitigation: name the function/file, or the codebase map routes the model to it.
-- **Copilot's "verify by reading" habit.** Even when fittok returns the full code, Copilot's model sometimes reads the file to confirm. This is model behavior, not a fittok limitation — a strong `.github/copilot-instructions.md` saying *"do not Read files that appear in fittok's output"* reduces it.
+- **GitHub Copilot Chat truncates large MCP outputs (the big one).** Copilot caches MCP tool results above ~7 KB to a `content.json` file, where the entire markdown collapses to ONE physical JSON line (newlines escaped) — and its Read tool truncates any line at ~2,000 characters. So an output over ~7 KB is effectively chopped to ~2,000 chars *regardless of total size*; the model can't see most of the code and falls back to reading source files directly. This is Copilot's delivery layer, not fittok — **every MCP server hits this wall.** By default (0.10.0+) fittok returns *all* relevant code uncapped, which is correct for clients that deliver inline but will be truncated by Copilot. Two workarounds:
+  - **Cap the output for Copilot** so it's delivered inline (under the ~7 KB threshold). Set `FITTOK_MAX_BUDGET=1200` in your MCP server's env:
+    ```json
+    { "servers": { "fittok": { "command": "uvx", "args": ["fittok"], "env": { "FITTOK_MAX_BUDGET": "1200" } } } }
+    ```
+  - **Use Claude Code or the CLI** for multi-file questions. They deliver MCP output inline with no truncation — which is where fittok's complete (uncapped) results and anti-re-read design actually pay off.
+- **Vocabulary gap on abstract queries.** When the query uses words that don't appear in the code (e.g. "isolation" → `REVOKE`/`DENY`), neither semantic nor BM25 can bridge it. The codebase map (file names + docstrings) and round-robin diversity help; naming the function/file routes the model to it.
 - **Incremental edge-loss:** editing a file can drop call/import edges *into* it from unchanged files until a full re-parse. fittok auto-recovers on restart or `reset_graph`.
-- **Token budgets are approximate:** counts use `cl100k_base`, so real usage drifts ~10–20% vs Claude's tokenizer (headroom is built into the budget constants).
+- **Token counts are approximate:** counts use `cl100k_base`, so real usage drifts ~10–20% vs Claude's tokenizer (only matters when you opt into a `FITTOK_MAX_BUDGET` cap).
 - **Very large repos:** PageRank is not yet vectorized — fine through low-thousands of nodes, slower beyond that.
 
 ---
@@ -286,6 +291,7 @@ with it** — because fittok replaced a 58k-token Explore subagent with one tool
 | `ANTHROPIC_API_KEY` | — | Enables LLM answers via `claude-haiku-4-5` |
 | `OPENAI_API_KEY` | — | Fallback LLM via `gpt-4o-mini` |
 | `FITTOK_SHOW_SAVINGS` | `true` | `🪙 saved X%` footer on MCP answers; set `false` to disable |
+| `FITTOK_MAX_BUDGET` | `0` (unlimited) | Code-token cap. `0` = return ALL relevant code in full (default — complete results in Claude Code / CLI). Set `1200` for **GitHub Copilot**, which truncates MCP outputs >~7 KB (see Known limitations). |
 | `FITTOK_AUTOWATCH` | `true` | Auto-start the file watcher so graph updates are incremental (only changed files re-parse); set `false` to fall back to full re-parse on edits |
 | `FITTOK_EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
 | `FITTOK_DEVICE` | `auto` | `auto` / `cuda` / `mps` / `cpu` |
